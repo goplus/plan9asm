@@ -411,7 +411,7 @@ func loadPackage(pkgPath, goos, goarch string) (*packages.Package, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName |
 			packages.NeedFiles |
-			packages.NeedCompiledGoFiles |
+			packages.NeedDeps |
 			packages.NeedImports |
 			packages.NeedSyntax |
 			packages.NeedTypes |
