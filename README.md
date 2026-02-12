@@ -7,6 +7,7 @@ Plan 9 assembly parser and LLVM IR translator, extracted as an independent modul
 ## Repository layout
 
 - `github.com/goplus/plan9asm`: parser + lowering library.
+- `cmd/plan9asm`: package/file oriented helper (`list`, `transpile`), moved from `llgo-stdlib-opt/chore/plan9asm`.
 - `cmd/plan9asmll`: stdlib-oriented converter/test tool (`.s -> .ll`, optional `llc` compile).
 
 ## Current status
@@ -25,6 +26,7 @@ Plan 9 assembly parser and LLVM IR translator, extracted as an independent modul
 - `Translate` keeps compatibility and returns textual IR from that module.
 - Root module dependency stays small (`goplus/llvm`).
 - `golang.org/x/tools/go/packages` is used only in `cmd/plan9asmll` submodule.
+- `cmd/plan9asm` does not depend on `llgo/internal/build` or `llgo/internal/packages`.
 
 ## Quick test
 
@@ -94,3 +96,29 @@ go run -C cmd/plan9asmll . \
 - The stdlib asm corpus depends on your local Go toolchain version (`go tool dist list`, `GOROOT` content).
 - If `-compile` is enabled, `llc` must be discoverable in `PATH` or set via `-llc`.
 - Design notes and migration details are in `doc/llvm-module-migration.md`.
+
+## `cmd/plan9asm` usage
+
+List packages/files containing `.s`:
+
+```bash
+go run -C cmd/plan9asm . list -goos=linux -goarch=amd64 std
+```
+
+Transpile package selected `.s` files:
+
+```bash
+go run -C cmd/plan9asm . transpile \
+  -pkg runtime \
+  -dir _out/plan9asm/runtime-linux-amd64 \
+  -goos=linux -goarch=amd64
+```
+
+Transpile one `.s` file:
+
+```bash
+go run -C cmd/plan9asm . transpile \
+  -i /path/to/file.s \
+  -o /tmp/file.ll \
+  -goos=linux -goarch=amd64
+```
