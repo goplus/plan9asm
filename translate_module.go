@@ -1,6 +1,7 @@
 package plan9asm
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -11,6 +12,14 @@ import (
 //
 // Caller owns the returned module and should call Dispose when finished.
 func TranslateModule(file *File, opt Options) (llvm.Module, error) {
+	mod, err := translateModuleDirect(file, opt)
+	if err == nil {
+		return mod, nil
+	}
+	if err != nil && !errors.Is(err, errDirectModuleUnsupported) {
+		return llvm.Module{}, err
+	}
+
 	ir, err := translateIRText(file, opt)
 	if err != nil {
 		return llvm.Module{}, err
