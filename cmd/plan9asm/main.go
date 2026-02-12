@@ -69,7 +69,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  go run ./cmd/plan9asm list [-goos <goos>] [-goarch <goarch>] [<pkg-or-path>]")
-	fmt.Fprintln(os.Stderr, "  go run ./cmd/plan9asm transpile -pkg <pkg-or-path> -dir <out-dir> [-goos <goos>] [-goarch <goarch>] [flags]")
+	fmt.Fprintln(os.Stderr, "  go run ./cmd/plan9asm transpile [-goos <goos>] [-goarch <goarch>] -dir <out-dir> [patterns...]")
 	fmt.Fprintln(os.Stderr, "  go run ./cmd/plan9asm transpile -i <file.s> -o <file.ll> [-goos <goos>] [-goarch <goarch>] [flags]")
 }
 
@@ -137,6 +137,7 @@ func runTranspile(args []string) error {
 	fs.SetOutput(os.Stderr)
 
 	var (
+		patterns string
 		pkgPath  string
 		outDir   string
 		inFile   string
@@ -152,7 +153,8 @@ func runTranspile(args []string) error {
 	fs.StringVar(&goarch, "goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/386)")
 	fs.StringVar(&goos, "goos", runtime.GOOS, "target GOOS")
 	fs.StringVar(&metaFile, "meta", "", "optional output metadata json path")
-	fs.StringVar(&pkgPath, "pkg", "", "Go package import path or filesystem path")
+	fs.StringVar(&patterns, "patterns", "", "deprecated comma-separated package patterns")
+	fs.StringVar(&pkgPath, "pkg", "", "deprecated alias for package patterns")
 	fs.StringVar(&outDir, "dir", "", "output directory for package transpile")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -160,25 +162,27 @@ func runTranspile(args []string) error {
 	if _, err := toPlan9Arch(goarch); err != nil {
 		return err
 	}
-	if len(fs.Args()) != 0 {
-		return fmt.Errorf("unexpected positional args: %s", strings.Join(fs.Args(), " "))
-	}
+	patList := make([]string, 0)
+	patList = append(patList, splitCSV(patterns)...)
+	patList = append(patList, splitCSV(pkgPath)...)
+	patList = append(patList, fs.Args()...)
+	patList = dedupStrings(patList)
 
-	pkgMode := strings.TrimSpace(pkgPath) != "" || strings.TrimSpace(outDir) != ""
+	pkgMode := len(patList) != 0 || strings.TrimSpace(outDir) != ""
 	fileMode := strings.TrimSpace(inFile) != "" || strings.TrimSpace(outFile) != ""
 
 	if pkgMode && fileMode {
-		return fmt.Errorf("-pkg/-dir and -i/-o are mutually exclusive")
+		return fmt.Errorf("package patterns and -i/-o are mutually exclusive")
 	}
 	if !pkgMode && !fileMode {
-		return fmt.Errorf("missing mode: use -pkg <pkg-or-path> -dir <out-dir>, or -i <file.s> -o <file.ll>")
+		return fmt.Errorf("missing mode: use transpile -dir <out-dir> <patterns...>, or -i <file.s> -o <file.ll>")
 	}
 
 	if pkgMode {
-		if strings.TrimSpace(pkgPath) == "" || strings.TrimSpace(outDir) == "" {
-			return fmt.Errorf("package mode requires both -pkg and -dir")
+		if len(patList) == 0 || strings.TrimSpace(outDir) == "" {
+			return fmt.Errorf("package mode requires both patterns and -dir")
 		}
-		return transpilePackageMode(pkgPath, outDir, goos, goarch, annotate, metaFile)
+		return transpilePackageMode(patList, outDir, goos, goarch, annotate, metaFile)
 	}
 
 	if strings.TrimSpace(inFile) == "" || strings.TrimSpace(outFile) == "" {
@@ -187,64 +191,106 @@ func runTranspile(args []string) error {
 	return transpileSingleFileMode(inFile, outFile, goos, goarch, annotate, metaFile)
 }
 
-func transpilePackageMode(pkgQuery, outDir, goos, goarch string, annotate bool, metaFile string) error {
-	gpkg, err := selectSinglePackage(pkgQuery, goos, goarch)
+func transpilePackageMode(patterns []string, outDir, goos, goarch string, annotate bool, metaFile string) error {
+	pkgs, err := listPackagesForPatterns(patterns, goos, goarch)
 	if err != nil {
 		return err
 	}
-	pkg, err := loadPackage(gpkg.ImportPath, goos, goarch)
-	if err != nil {
-		return err
+	withSFiles := make([]goListPackage, 0, len(pkgs))
+	for _, p := range pkgs {
+		if len(p.SFiles) > 0 {
+			withSFiles = append(withSFiles, p)
+		}
 	}
-	sfiles := packageSFilesAbs(gpkg)
-	if len(sfiles) == 0 {
-		return fmt.Errorf("package %s has no selected .s files for GOOS=%s GOARCH=%s", gpkg.ImportPath, goos, goarch)
+	if len(withSFiles) == 0 {
+		return fmt.Errorf("no package with selected .s files for GOOS=%s GOARCH=%s and patterns=%s", goos, goarch, strings.Join(patterns, ","))
 	}
-	sort.Strings(sfiles)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return err
 	}
+	multiPkg := len(withSFiles) > 1
 
 	type metaItem struct {
 		File      string         `json:"file"`
 		Output    string         `json:"output"`
 		Functions []functionInfo `json:"functions"`
 	}
-	items := make([]metaItem, 0, len(sfiles))
+	type packageMeta struct {
+		Package string     `json:"package"`
+		Items   []metaItem `json:"items"`
+	}
+	pkgMetas := make([]packageMeta, 0, len(withSFiles))
 
-	for _, sfile := range sfiles {
-		tr, ok, err := translateAsmForPackage(pkg, sfile, goos, goarch, annotate)
+	for _, gpkg := range withSFiles {
+		pkg, err := loadPackage(gpkg.ImportPath, goos, goarch)
 		if err != nil {
-			return fmt.Errorf("transpile %s: %w", sfile, err)
-		}
-		if !ok {
-			continue
-		}
-		outPath := filepath.Join(outDir, filepath.Base(sfile)+".ll")
-		if err := writeTextFile(outPath, tr.LLVMIR); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "wrote llvm ir: %s\n", outPath)
-		items = append(items, metaItem{File: sfile, Output: outPath, Functions: tr.Functions})
+		sfiles := packageSFilesAbs(gpkg)
+		sort.Strings(sfiles)
+		items := make([]metaItem, 0, len(sfiles))
+		pkgOutDir := outDir
+		if multiPkg {
+			pkgOutDir = filepath.Join(outDir, packageOutputDir(gpkg.ImportPath))
+		}
+
+		for _, sfile := range sfiles {
+			tr, ok, err := translateAsmForPackage(pkg, sfile, goos, goarch, annotate)
+			if err != nil {
+				return fmt.Errorf("transpile %s: %w", sfile, err)
+			}
+			if !ok {
+				continue
+			}
+			outPath := filepath.Join(pkgOutDir, filepath.Base(sfile)+".ll")
+			if err := writeTextFile(outPath, tr.LLVMIR); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "wrote llvm ir: %s\n", outPath)
+			items = append(items, metaItem{File: sfile, Output: outPath, Functions: tr.Functions})
+		}
+
+		pkgMetas = append(pkgMetas, packageMeta{Package: gpkg.ImportPath, Items: items})
 	}
 
-	if metaFile != "" {
+	if metaFile == "" {
+		return nil
+	}
+	if len(pkgMetas) == 1 {
 		payload := struct {
-			Package string     `json:"package"`
-			GOOS    string     `json:"goos"`
-			GOARCH  string     `json:"goarch"`
-			Items   []metaItem `json:"items"`
+			Patterns []string   `json:"patterns,omitempty"`
+			Package  string     `json:"package"`
+			GOOS     string     `json:"goos"`
+			GOARCH   string     `json:"goarch"`
+			Items    []metaItem `json:"items"`
 		}{
-			Package: gpkg.ImportPath,
-			GOOS:    goos,
-			GOARCH:  goarch,
-			Items:   items,
+			Patterns: patterns,
+			Package:  pkgMetas[0].Package,
+			GOOS:     goos,
+			GOARCH:   goarch,
+			Items:    pkgMetas[0].Items,
 		}
 		if err := writeJSONFile(metaFile, payload); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "wrote metadata: %s\n", metaFile)
+		return nil
 	}
+	payload := struct {
+		Patterns []string      `json:"patterns"`
+		GOOS     string        `json:"goos"`
+		GOARCH   string        `json:"goarch"`
+		Packages []packageMeta `json:"packages"`
+	}{
+		Patterns: patterns,
+		GOOS:     goos,
+		GOARCH:   goarch,
+		Packages: pkgMetas,
+	}
+	if err := writeJSONFile(metaFile, payload); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote metadata: %s\n", metaFile)
 	return nil
 }
 
@@ -497,6 +543,72 @@ func goListPackages(query, goos, goarch string) ([]goListPackage, error) {
 		pkgs = append(pkgs, p)
 	}
 	return pkgs, nil
+}
+
+func listPackagesForPatterns(patterns []string, goos, goarch string) ([]goListPackage, error) {
+	uniq := map[string]goListPackage{}
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		pkgs, err := goListPackages(p, goos, goarch)
+		if err != nil {
+			return nil, err
+		}
+		for _, pkg := range pkgs {
+			key := strings.TrimSpace(pkg.ImportPath)
+			if key == "" {
+				key = strings.TrimSpace(pkg.Dir)
+			}
+			if key == "" {
+				continue
+			}
+			uniq[key] = pkg
+		}
+	}
+	out := make([]goListPackage, 0, len(uniq))
+	for _, pkg := range uniq {
+		out = append(out, pkg)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ImportPath < out[j].ImportPath
+	})
+	return out, nil
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func dedupStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func packageOutputDir(importPath string) string {
+	importPath = strings.TrimSpace(importPath)
+	if importPath == "" {
+		return "_unknown"
+	}
+	return filepath.FromSlash(importPath)
 }
 
 func packageSFilesAbs(p goListPackage) []string {

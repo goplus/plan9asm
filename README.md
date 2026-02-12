@@ -105,13 +105,15 @@ List packages/files containing `.s`:
 go run -C cmd/plan9asm . list -goos=linux -goarch=amd64 std
 ```
 
+`transpile` package mode uses positional patterns (`go build/test` style) and supports multiple patterns.
+
 Transpile package selected `.s` files:
 
 ```bash
 go run -C cmd/plan9asm . transpile \
-  -pkg runtime \
   -dir _out/plan9asm/runtime-linux-amd64 \
-  -goos=linux -goarch=amd64
+  -goos=linux -goarch=amd64 \
+  runtime
 ```
 
 Transpile one `.s` file:
