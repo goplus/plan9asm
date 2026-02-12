@@ -56,6 +56,11 @@ jobs:
       - name: Go build
         run: go build ./...
 
+      - name: Smoke test cmd/plan9asm (list + transpile)
+        run: |
+          go run -C cmd/plan9asm . list -goos=linux -goarch=amd64 runtime > /dev/null
+          go run -C cmd/plan9asm . transpile -goos=linux -goarch=amd64 -dir _out/ci/plan9asm-syscall syscall
+
   test:
     runs-on: ubuntu-latest
     strategy:
