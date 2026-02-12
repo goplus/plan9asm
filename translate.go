@@ -80,8 +80,19 @@ type Options struct {
 
 // Translate converts a parsed Plan 9 asm File into LLVM IR text (`.ll`).
 //
-// This is intentionally a prototype and supports only a small subset.
+// The generated text is produced from an llvm.Module to keep textual emission
+// consistent with the LLVM printer.
 func Translate(file *File, opt Options) (string, error) {
+	mod, err := TranslateModule(file, opt)
+	if err != nil {
+		return "", err
+	}
+	defer mod.Dispose()
+	return mod.String(), nil
+}
+
+// translateIRText builds textual LLVM IR prior to module parsing.
+func translateIRText(file *File, opt Options) (string, error) {
 	if file == nil {
 		return "", fmt.Errorf("nil file")
 	}
