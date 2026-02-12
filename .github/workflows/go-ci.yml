@@ -39,6 +39,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install LLVM 19
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
+          echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -68,6 +76,21 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
+      - name: Install LLVM 19
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
+          echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
+
+      - name: LLVM tools info
+        run: |
+          which llc
+          llc --version
+          which clang
+          clang --version
+
       - name: Go test
         run: go test ./...
 
@@ -83,6 +106,14 @@ jobs:
         with:
           go-version: '1.22.x'
           cache: true
+
+      - name: Install LLVM 19
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
+          echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
 
       - name: Go test (race)
         run: go test -race ./...
