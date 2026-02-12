@@ -32,6 +32,33 @@ func preprocess(src string) (string, error) {
 		_, ok := macros[name]
 		return ok
 	}
+	evalIfExpr := func(expr string) bool {
+		e := strings.TrimSpace(expr)
+		if e == "" {
+			return false
+		}
+		neg := false
+		for strings.HasPrefix(e, "!") {
+			neg = !neg
+			e = strings.TrimSpace(strings.TrimPrefix(e, "!"))
+		}
+		val := false
+		switch {
+		case strings.HasPrefix(e, "defined(") && strings.HasSuffix(e, ")"):
+			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(e, "defined("), ")"))
+			val = isDefined(name)
+		case strings.HasPrefix(e, "defined ") || strings.HasPrefix(e, "defined\t"):
+			name := strings.TrimSpace(strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(e, "defined "), "defined\t")))
+			val = isDefined(name)
+		default:
+			// Bare identifier in #if.
+			val = isDefined(e)
+		}
+		if neg {
+			return !val
+		}
+		return val
+	}
 
 	// First pass: collect #define, build output lines for further parsing.
 	lines := []string{}
@@ -158,6 +185,32 @@ func preprocess(src string) (string, error) {
 			st := ifState{outerActive: active, cond: !isDefined(name)}
 			ifStack = append(ifStack, st)
 			active = active && st.cond
+			continue
+		}
+		if strings.HasPrefix(trim, "#if") {
+			expr := strings.TrimSpace(strings.TrimPrefix(trim, "#if"))
+			st := ifState{outerActive: active, cond: evalIfExpr(expr)}
+			ifStack = append(ifStack, st)
+			active = active && st.cond
+			continue
+		}
+		if strings.HasPrefix(trim, "#elif") {
+			if len(ifStack) == 0 {
+				return "", fmt.Errorf("line %d: stray #elif", lineno)
+			}
+			top := ifStack[len(ifStack)-1]
+			if top.inElse {
+				return "", fmt.Errorf("line %d: #elif after #else", lineno)
+			}
+			// Only first satisfied branch stays active.
+			if top.cond {
+				active = false
+				continue
+			}
+			expr := strings.TrimSpace(strings.TrimPrefix(trim, "#elif"))
+			top.cond = evalIfExpr(expr)
+			ifStack[len(ifStack)-1] = top
+			active = top.outerActive && top.cond
 			continue
 		}
 		if strings.HasPrefix(trim, "#else") {
@@ -291,6 +344,10 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	if inlineChanged {
 		return expandPPLine(line, macros, macroNames, depth+1)
 	}
+	// Expand object-like macro identifiers inline (e.g. "MOVD NR, R0").
+	if nl, changed := expandIdentMacros(line, macros, macroNames); changed {
+		return expandPPLine(nl, macros, macroNames, depth+1)
+	}
 	// Expand immediate macro refs in-place: $NAME -> $<body>.
 	for _, name := range macroNames {
 		m := macros[name]
@@ -307,6 +364,55 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 	//   $(Big - 1) -> $(0x433... - 1)
 	line = expandImmExprMacros(line, macros)
 	return []string{line}
+}
+
+func ppIsIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '_'
+}
+
+func expandIdentMacros(line string, macros map[string]ppMacro, macroNames []string) (string, bool) {
+	changed := false
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) != 0 {
+			continue
+		}
+		body := strings.TrimSpace(m.body)
+		if body == "" || body == name {
+			continue
+		}
+		var out strings.Builder
+		i := 0
+		localChanged := false
+		for i < len(line) {
+			j := strings.Index(line[i:], name)
+			if j < 0 {
+				out.WriteString(line[i:])
+				break
+			}
+			j += i
+			k := j + len(name)
+			leftOK := j == 0 || !ppIsIdentChar(line[j-1])
+			rightOK := k >= len(line) || !ppIsIdentChar(line[k])
+			if leftOK && rightOK {
+				out.WriteString(line[i:j])
+				out.WriteString(body)
+				i = k
+				localChanged = true
+				continue
+			}
+			out.WriteString(line[i : j+1])
+			i = j + 1
+		}
+		if localChanged {
+			line = out.String()
+			changed = true
+		}
+	}
+	return line, changed
 }
 
 func expandImmExprMacros(line string, macros map[string]ppMacro) string {

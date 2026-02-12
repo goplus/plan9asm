@@ -455,8 +455,7 @@ func asmFilesOfPkg(p *packages.Package) []string {
 }
 
 func isAsmFile(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".s"
+	return filepath.Ext(path) == ".s"
 }
 
 func toPlan9Arch(goarch string) (plan9asm.Arch, error) {

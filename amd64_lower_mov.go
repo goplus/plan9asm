@@ -7,7 +7,7 @@ import (
 
 func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVQ", "MOVL", "MOVLQZX", "MOVB", "MOVW", "CMOVQLT":
+	case "MOVQ", "MOVL", "MOVLQZX", "MOVLQSX", "MOVB", "MOVW", "CMOVQLT":
 		// ok
 	default:
 		return false, false, nil
@@ -18,6 +18,47 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 	src, dst := ins.Args[0], ins.Args[1]
 	if op == "MOVLQZX" {
 		op = "MOVL"
+	}
+	if op == "MOVLQSX" {
+		// Sign-extend i32 source to i64 destination register.
+		if dst.Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 MOVLQSX expects dst reg: %q", ins.Raw)
+		}
+		var i32v string
+		switch src.Kind {
+		case OpImm:
+			i32v = fmt.Sprintf("%d", int32(src.Imm))
+		case OpReg, OpFP:
+			v64, err := c.evalI64(src)
+			if err != nil {
+				return true, false, err
+			}
+			tr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
+			i32v = "%" + tr
+		case OpMem:
+			addr, err := c.addrFromMem(src.Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			i32v = "%" + ld
+		case OpSym:
+			p, err := c.ptrFromSB(src.Sym)
+			if err != nil {
+				return true, false, err
+			}
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			i32v = "%" + ld
+		default:
+			return true, false, fmt.Errorf("amd64 MOVLQSX unsupported src: %q", ins.Raw)
+		}
+		se := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", se, i32v)
+		return true, false, c.storeReg(dst.Reg, "%"+se)
 	}
 
 	// Vector moves are handled in lowerVec.
@@ -222,6 +263,14 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 					return true, false, err
 				}
 				p := c.ptrFromAddrI64(addr)
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+				i32v = "%" + ld
+			case OpSym:
+				p, err := c.ptrFromSB(src.Sym)
+				if err != nil {
+					return true, false, err
+				}
 				ld := c.newTmp()
 				fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
 				i32v = "%" + ld

@@ -182,6 +182,75 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			return true, false, err
 		}
 		return true, false, nil
+	case "NEGL":
+		// 32-bit negate with x86 semantics: write back low 32 bits and zero-extend.
+		if len(ins.Args) != 1 {
+			return true, false, fmt.Errorf("amd64 NEGL expects dst: %q", ins.Raw)
+		}
+		switch ins.Args[0].Kind {
+		case OpReg:
+			dv, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			t32 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t32, dv)
+			neg := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, t32)
+			z := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, neg)
+			if err := c.storeReg(ins.Args[0].Reg, "%"+z); err != nil {
+				return true, false, err
+			}
+			c.setZSFlagsFromI32("%" + neg)
+			return true, false, nil
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			neg := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = sub i32 0, %%%s\n", neg, ld)
+			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s, align 1\n", neg, p)
+			c.setZSFlagsFromI32("%" + neg)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 NEGL expects reg/mem dst: %q", ins.Raw)
+		}
+	case "RCRQ":
+		// Rotate through carry right (count=1) used by runtime time division path.
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpImm {
+			return true, false, fmt.Errorf("amd64 RCRQ expects $count, dstReg: %q", ins.Raw)
+		}
+		if ins.Args[0].Imm != 1 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 RCRQ currently supports $1, reg: %q", ins.Raw)
+		}
+		dv, err := c.loadReg(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		oldCF := c.loadFlag(c.flagsCFSlot)
+		lsb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 1\n", lsb, dv)
+		newCF := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", newCF, lsb)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", newCF, c.flagsCFSlot)
+		shr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 1\n", shr, dv)
+		cf64 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", cf64, oldCF)
+		cfhi := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, 63\n", cfhi, cf64)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", out, shr, cfhi)
+		if err := c.storeReg(ins.Args[1].Reg, "%"+out); err != nil {
+			return true, false, err
+		}
+		c.setZSFlagsFromI64("%" + out)
+		return true, false, nil
 
 	case "ADDQ", "SUBQ", "XORQ", "ANDQ", "ORQ":
 		if len(ins.Args) != 2 {

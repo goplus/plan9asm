@@ -147,16 +147,24 @@ func (c *amd64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 				return true, false, c.storeReg(dstReg, "%"+sz)
 			}
 		}
-		if ins.Args[1].Kind != OpMem {
+		if ins.Args[1].Kind != OpMem && ins.Args[1].Kind != OpSym {
 			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
 		}
 		src, err := c.amd64AtomicTruncFromI64(src64, ty)
 		if err != nil {
 			return true, false, err
 		}
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
+		ptr := ""
+		if ins.Args[1].Kind == OpMem {
+			ptr, err = c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			ptr, err = c.ptrFromSB(ins.Args[1].Sym)
+			if err != nil {
+				return true, false, err
+			}
 		}
 		old := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw xchg ptr %s, %s %s seq_cst\n", old, ptr, ty, src)

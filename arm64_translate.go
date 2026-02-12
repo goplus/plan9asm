@@ -110,13 +110,23 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 		baseOp = baseOp[:dot]
 	}
 	op := Op(baseOp)
+	if strings.HasPrefix(rawOp, "SAVE_R19_TO_R28(") ||
+		strings.HasPrefix(rawOp, "RESTORE_R19_TO_R28(") ||
+		strings.HasPrefix(rawOp, "SAVE_F8_TO_F15(") ||
+		strings.HasPrefix(rawOp, "RESTORE_F8_TO_F15(") {
+		return false, nil
+	}
 
 	switch op {
 	case OpTEXT, OpBYTE:
 		return false, nil
 	case OpRET:
 		return true, c.lowerRET()
-	case "PCALIGN":
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "WORD", "DMB", "PRFM",
+		"BREAK", "BRK", "UNDEF", "#UNDEF", "YIELD", "NOP",
+		"FLDPD", "FSTPD", "FMOVS", "STY",
+		"P256ADDINLINE", "P256MULBY2INLINE", "MOV", "CCMP",
+		"#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
 

@@ -4,6 +4,12 @@ import "fmt"
 
 func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
+	case "MRS_TPIDR_R0":
+		// Pseudo-op used in runtime tls stubs.
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i64 asm sideeffect %q, %q()\n", t, "mrs $0, TPIDR_EL0", "=r,~{memory}")
+		return true, false, c.storeReg(Reg("R0"), "%"+t)
+
 	case "MRS":
 		// MRS <sysreg>, Rn
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpIdent || ins.Args[1].Kind != OpReg {
@@ -114,6 +120,72 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, nil
 
+	case "ADC", "ADCS", "SBC", "SBCS":
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 %s expects 2 or 3 operands: %q", op, ins.Raw)
+		}
+		var a, bval string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 %s dst must be reg: %q", op, ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			bval, err = c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			bval, err = c.eval64(ins.Args[1], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 %s dst must be reg: %q", op, ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+		}
+		cf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", cf, c.flagsCSlot)
+		cin := c.newTmp()
+		if op == "SBC" || op == "SBCS" {
+			ncf := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", ncf, cf)
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i64\n", cin, ncf)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i64\n", cin, cf)
+		}
+		t0 := c.newTmp()
+		if op == "SBC" || op == "SBCS" {
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %s\n", t0, bval, a)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, %s\n", t0, bval, a)
+		}
+		t := c.newTmp()
+		if op == "SBC" || op == "SBCS" {
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %%%s, %%%s\n", t, t0, cin)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", t, t0, cin)
+		}
+		if err := c.storeReg(dst, "%"+t); err != nil {
+			return true, false, err
+		}
+		if op == "ADCS" {
+			c.setFlagsAdd(bval, a, "%"+t)
+		}
+		if op == "SBCS" {
+			c.setFlagsSub(bval, a, "%"+t)
+		}
+		return true, false, nil
+
 	case "ADDW":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return true, false, fmt.Errorf("arm64 ADDW expects 2 or 3 operands: %q", ins.Raw)
@@ -155,6 +227,49 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, %%%s\n", sum, tb, ta)
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, sum)
+		return true, false, c.storeReg(dst, "%"+z)
+
+	case "SUBW":
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 SUBW expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var a, bval string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 SUBW dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			bval, err = c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			bval, err = c.eval64(ins.Args[1], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 SUBW dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+		}
+		ta := c.newTmp()
+		tb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", ta, a)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tb, bval)
+		diff := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sub i32 %%%s, %%%s\n", diff, tb, ta)
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, diff)
 		return true, false, c.storeReg(dst, "%"+z)
 
 	case "AND", "ANDS", "EOR", "ORR", "ANDW", "EORW", "ORRW":
@@ -228,6 +343,53 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, nil
 
+	case "ANDSW":
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 ANDSW expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var a, bval string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 ANDSW dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			bval, err = c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			bval, err = c.eval64(ins.Args[1], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 ANDSW dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+		}
+		aw := c.newTmp()
+		bw := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", aw, a)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", bw, bval)
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", t, bw, aw)
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
+		if err := c.storeReg(dst, "%"+z); err != nil {
+			return true, false, err
+		}
+		c.setFlagsLogic("%" + z)
+		return true, false, nil
+
 	case "SUBS":
 		if len(ins.Args) != 2 && len(ins.Args) != 3 {
 			return true, false, fmt.Errorf("arm64 SUBS expects 2 or 3 operands: %q", ins.Raw)
@@ -271,14 +433,28 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 
 	case "BIC":
 		// BIC src, src2, dst => dst = src2 & ~src
-		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 BIC expects 3 operands ending with reg: %q", ins.Raw)
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 BIC expects 2 or 3 operands: %q", ins.Raw)
 		}
 		src, err := c.eval64(ins.Args[0], false)
 		if err != nil {
 			return true, false, err
 		}
-		src2, err := c.eval64(ins.Args[1], false)
+		var src2 string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 BIC 2-operand form expects reg dst: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			src2, err = c.loadReg(dst)
+		} else {
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 BIC 3-operand form expects reg dst: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+			src2, err = c.eval64(ins.Args[1], false)
+		}
 		if err != nil {
 			return true, false, err
 		}
@@ -286,18 +462,32 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = xor i64 %s, -1\n", nt, src)
 		at := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", at, src2, nt)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+at)
+		return true, false, c.storeReg(dst, "%"+at)
 
 	case "BICW":
 		// BICW src, src2, dst => dst = src2 & ~src (32-bit, zero-extended)
-		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 BICW expects 3 operands ending with reg: %q", ins.Raw)
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 BICW expects 2 or 3 operands: %q", ins.Raw)
 		}
 		src, err := c.eval64(ins.Args[0], false)
 		if err != nil {
 			return true, false, err
 		}
-		src2, err := c.eval64(ins.Args[1], false)
+		var src2 string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 BICW 2-operand form expects reg dst: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			src2, err = c.loadReg(dst)
+		} else {
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 BICW 3-operand form expects reg dst: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+			src2, err = c.eval64(ins.Args[1], false)
+		}
 		if err != nil {
 			return true, false, err
 		}
@@ -311,7 +501,7 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", at, s2w, nt)
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, at)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+z)
+		return true, false, c.storeReg(dst, "%"+z)
 
 	case "MVN":
 		// MVN src, dst => dst = ~src
@@ -468,12 +658,114 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = sub i64 0, %s\n", t, src)
 		return true, false, c.storeReg(ins.Args[1].Reg, "%"+t)
 
+	case "MUL":
+		// MUL a, dst or MUL a, b, dst
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 MUL expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var a, bval string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 MUL dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			bval, err = c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			bval, err = c.eval64(ins.Args[1], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 MUL dst must be reg: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", t, bval, a)
+		return true, false, c.storeReg(dst, "%"+t)
+
+	case "UMULH":
+		// UMULH a, b, dst -> high 64 bits of unsigned 128-bit product.
+		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 UMULH expects a, b, dstReg: %q", ins.Raw)
+		}
+		a, err := c.eval64(ins.Args[0], false)
+		if err != nil {
+			return true, false, err
+		}
+		bv, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		za := c.newTmp()
+		zb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", za, a)
+		fmt.Fprintf(c.b, "  %%%s = zext i64 %s to i128\n", zb, bv)
+		m := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = mul i128 %%%s, %%%s\n", m, za, zb)
+		sh := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i128 %%%s, 64\n", sh, m)
+		hi := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i128 %%%s to i64\n", hi, sh)
+		return true, false, c.storeReg(ins.Args[2].Reg, "%"+hi)
+
+	case "MADD", "MSUB":
+		if len(ins.Args) != 4 || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 %s expects a, b, c, dstReg: %q", op, ins.Raw)
+		}
+		a, err := c.eval64(ins.Args[0], false)
+		if err != nil {
+			return true, false, err
+		}
+		bv, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		cv, err := c.eval64(ins.Args[2], false)
+		if err != nil {
+			return true, false, err
+		}
+		m := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = mul i64 %s, %s\n", m, a, bv)
+		t := c.newTmp()
+		if op == "MADD" {
+			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %s\n", t, m, cv)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, %%%s\n", t, cv, m)
+		}
+		return true, false, c.storeReg(ins.Args[3].Reg, "%"+t)
+
 	case "LSL", "LSR":
 		// LSL/LSR $imm|reg, srcReg, dstReg
-		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 %s expects shift, srcReg, dstReg: %q", op, ins.Raw)
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 %s expects 2 or 3 operands: %q", op, ins.Raw)
 		}
-		src, err := c.loadReg(ins.Args[1].Reg)
+		var srcReg Reg
+		var dstReg Reg
+		if len(ins.Args) == 2 {
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 %s expects shift, dstReg: %q", op, ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[1].Reg
+		} else {
+			if ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 %s expects shift, srcReg, dstReg: %q", op, ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[2].Reg
+		}
+		src, err := c.loadReg(srcReg)
 		if err != nil {
 			return true, false, err
 		}
@@ -499,7 +791,166 @@ func (c *arm64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		} else {
 			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", t, src, shv)
 		}
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+t)
+		return true, false, c.storeReg(dstReg, "%"+t)
+
+	case "LSLW":
+		// LSLW shift, dstReg  or  LSLW shift, srcReg, dstReg
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 LSLW expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var srcReg Reg
+		var dstReg Reg
+		var sh Operand
+		if len(ins.Args) == 2 {
+			sh = ins.Args[0]
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 LSLW expects shift, dstReg: %q", ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[1].Reg
+		} else {
+			sh = ins.Args[0]
+			if ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 LSLW expects shift, srcReg, dstReg: %q", ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[2].Reg
+		}
+		src64, err := c.loadReg(srcReg)
+		if err != nil {
+			return true, false, err
+		}
+		src32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", src32, src64)
+		var sh32 string
+		switch sh.Kind {
+		case OpImm:
+			sh32 = fmt.Sprintf("%d", int64(uint32(sh.Imm)&31))
+		case OpReg:
+			sv, err := c.loadReg(sh.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			st := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", st, sv)
+			m := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, 31\n", m, st)
+			sh32 = "%" + m
+		default:
+			return true, false, fmt.Errorf("arm64 LSLW unsupported shift operand: %q", ins.Raw)
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %s\n", t, src32, sh32)
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
+		return true, false, c.storeReg(dstReg, "%"+z)
+
+	case "ASR":
+		// ASR shift, dstReg  or  ASR shift, srcReg, dstReg
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 ASR expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var srcReg Reg
+		var dstReg Reg
+		if len(ins.Args) == 2 {
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 ASR expects shift, dstReg: %q", ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[1].Reg
+		} else {
+			if ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 ASR expects shift, srcReg, dstReg: %q", ins.Raw)
+			}
+			srcReg, dstReg = ins.Args[1].Reg, ins.Args[2].Reg
+		}
+		src, err := c.loadReg(srcReg)
+		if err != nil {
+			return true, false, err
+		}
+		shv := ""
+		switch ins.Args[0].Kind {
+		case OpImm:
+			shv = c.imm64(ins.Args[0].Imm & 63)
+		case OpReg:
+			shv, err = c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			m := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", m, shv)
+			shv = "%" + m
+		default:
+			return true, false, fmt.Errorf("arm64 ASR unsupported shift operand: %q", ins.Raw)
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = ashr i64 %s, %s\n", t, src, shv)
+		return true, false, c.storeReg(dstReg, "%"+t)
+
+	case "UDIV":
+		if len(ins.Args) != 2 && len(ins.Args) != 3 {
+			return true, false, fmt.Errorf("arm64 UDIV expects 2 or 3 operands: %q", ins.Raw)
+		}
+		var a, bval string
+		var dst Reg
+		if len(ins.Args) == 2 {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[1].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 UDIV expects src, dstReg: %q", ins.Raw)
+			}
+			dst = ins.Args[1].Reg
+			bval, err = c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			a, err = c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			bval, err = c.eval64(ins.Args[1], false)
+			if err != nil {
+				return true, false, err
+			}
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 UDIV expects src, src2, dstReg: %q", ins.Raw)
+			}
+			dst = ins.Args[2].Reg
+		}
+		nonzero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", nonzero, a)
+		div := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = udiv i64 %s, %s\n", div, bval, a)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 0\n", out, nonzero, div)
+		return true, false, c.storeReg(dst, "%"+out)
+
+	case "EXTR":
+		// EXTR shift, hi, lo, dst
+		if len(ins.Args) != 4 || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 EXTR expects shift, hi, lo, dstReg: %q", ins.Raw)
+		}
+		var sh int64
+		if ins.Args[0].Kind == OpImm {
+			sh = ins.Args[0].Imm & 63
+		} else {
+			return true, false, fmt.Errorf("arm64 EXTR expects immediate shift: %q", ins.Raw)
+		}
+		hi, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		lo, err := c.eval64(ins.Args[2], false)
+		if err != nil {
+			return true, false, err
+		}
+		loPart := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", loPart, lo, sh)
+		hiPart := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %d\n", hiPart, hi, (64-sh)&63)
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", t, loPart, hiPart)
+		return true, false, c.storeReg(ins.Args[3].Reg, "%"+t)
 
 	case "RORW":
 		// RORW shift, dstReg  or  RORW shift, srcReg, dstReg

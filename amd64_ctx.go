@@ -925,14 +925,26 @@ func parseSBRef(sym string) (base string, off int64, ok bool) {
 	//   r2r1<>+0(SB)
 	//   runtime·memequal(SB)
 	sym = strings.TrimSpace(sym)
-	if !strings.HasSuffix(sym, "(SB)") {
+	if strings.HasSuffix(sym, "(SB)") {
+		s := strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
+		if s == "" {
+			return "", 0, false
+		}
+		base, off = splitSymPlusOff(s)
+		return base, off, true
+	}
+	// Also accept bare symbol names used by a few platform asm stubs
+	// (e.g. windows arm64 shared-user-data aliases).
+	if strings.IndexAny(sym, " \t,") >= 0 {
 		return "", 0, false
 	}
-	s := strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
-	if s == "" {
+	if _, ok := parseMem(sym); ok {
 		return "", 0, false
 	}
-	base, off = splitSymPlusOff(s)
+	base, off = splitSymPlusOff(sym)
+	if strings.TrimSpace(base) == "" {
+		return "", 0, false
+	}
 	return base, off, true
 }
 

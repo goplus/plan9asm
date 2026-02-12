@@ -41,6 +41,22 @@ const (
 func parseReg(s string) (Reg, bool) {
 	ss := strings.ToUpper(strings.TrimSpace(s))
 	switch ss {
+	case "RAX":
+		return AX, true
+	case "RBX":
+		return BX, true
+	case "RCX":
+		return CX, true
+	case "RDX":
+		return DX, true
+	case "RSI":
+		return SI, true
+	case "RDI":
+		return DI, true
+	case "RSP", "ESP":
+		return SP, true
+	case "RBP", "EBP":
+		return BP, true
 	case "AX":
 		return AX, true
 	case "BX":
@@ -69,11 +85,24 @@ func parseReg(s string) (Reg, bool) {
 		return DL, true
 	case "ZR":
 		return ZR, true
+	case "G":
+		// Go arm64 asm pseudo register alias.
+		return Reg("R28"), true
+	case "LR":
+		return Reg("R30"), true
+	case "R18_PLATFORM":
+		return Reg("R18"), true
 	}
 	if strings.HasPrefix(ss, "R") && len(ss) >= 2 {
 		// AArch64 general purpose registers: R0..R31, and x86-64 integer registers R8..R15.
 		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 31 {
 			return Reg(ss), true
+		}
+	}
+	if strings.HasPrefix(ss, "W") && len(ss) >= 2 {
+		// AArch64 32-bit aliases W0..W31 share the underlying X registers.
+		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 31 {
+			return Reg(fmt.Sprintf("R%d", n)), true
 		}
 	}
 	// SIMD/FP registers:
@@ -699,7 +728,22 @@ func parseMem(s string) (MemRef, bool) {
 	if !strings.HasPrefix(rest, "(") {
 		return MemRef{}, false
 	}
-	j := strings.IndexByte(rest, ')')
+	depth := 0
+	j := -1
+	for k := 0; k < len(rest); k++ {
+		switch rest[k] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				j = k
+			}
+		}
+		if j >= 0 {
+			break
+		}
+	}
 	if j < 0 {
 		return MemRef{}, false
 	}

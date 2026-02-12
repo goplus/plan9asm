@@ -158,6 +158,12 @@ func (c *arm64Ctx) scanUsedRegs() {
 	}
 	// Ensure return reg exists.
 	markReg(Reg("R0"))
+	// Keep lowering permissive for hand-written stubs that reference ad-hoc
+	// registers via macros/aliases not captured in signatures.
+	for i := 0; i <= 31; i++ {
+		markReg(Reg(fmt.Sprintf("R%d", i)))
+	}
+	markReg(SP)
 }
 
 func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {

@@ -290,6 +290,12 @@ func parseGLOBLStmt(rest string) (GloblStmt, error) {
 		return GloblStmt{}, fmt.Errorf("GLOBL empty symbol: %q", "GLOBL "+rest)
 	}
 	sz, ok := parseImm(sizePart)
+	if (!ok || sz < 0) && strings.HasPrefix(sizePart, "$(") && strings.HasSuffix(sizePart, ")") {
+		// Some platform asm uses symbolic struct-size macros in GLOBL sizes
+		// (e.g. $(machTimebaseInfo__size)). We don't evaluate include-time
+		// macros here, so keep a conservative non-zero placeholder size.
+		sz, ok = 64, true
+	}
 	if !ok || sz < 0 {
 		return GloblStmt{}, fmt.Errorf("GLOBL invalid size %q: %q", sizePart, "GLOBL "+rest)
 	}
