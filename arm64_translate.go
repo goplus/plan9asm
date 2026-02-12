@@ -8,6 +8,28 @@ import (
 type arm64EmitBr func(target string)
 type arm64EmitCondBr func(cond string, target string, fall string) error
 
+func emitARM64Prelude(b *strings.Builder) {
+	b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
+	b.WriteString("declare i32 @cliteErrno()\n")
+	b.WriteString("declare i64 @llvm.bitreverse.i64(i64)\n")
+	b.WriteString("declare i64 @llvm.ctlz.i64(i64, i1)\n")
+	b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
+	// AArch64 CRC32 and CRC32C intrinsics.
+	// Note: B/H forms take the data operand as i32 (low bits used).
+	b.WriteString("declare i32 @llvm.aarch64.crc32b(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32h(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32w(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32x(i32, i64)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32cb(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32ch(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32cw(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.aarch64.crc32cx(i32, i64)\n")
+	b.WriteString("\n")
+	// Attribute group used by some functions to enable optional ISA features.
+	// (Example: "+crc" for hash/crc32 arm64 fast paths.)
+	b.WriteString("attributes #0 = { \"target-features\"=\"+crc\" }\n\n")
+}
+
 func translateFuncARM64(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotateSource bool) error {
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
 	for i, t := range sig.Args {

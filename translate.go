@@ -99,58 +99,9 @@ func Translate(file *File, opt Options) (string, error) {
 	if opt.TargetTriple != "" {
 		fmt.Fprintf(&b, "target triple = %q\n\n", opt.TargetTriple)
 	}
-	// Intrinsics used by the prototype lowering. Declare them up-front so clang/llc
-	// can type-check the module without relying on implicit declarations.
-	if file.Arch == ArchARM64 {
-		b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
-		b.WriteString("declare i32 @cliteErrno()\n")
-		b.WriteString("declare i64 @llvm.bitreverse.i64(i64)\n")
-		b.WriteString("declare i64 @llvm.ctlz.i64(i64, i1)\n")
-		b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
-		// AArch64 CRC32 and CRC32C intrinsics.
-		// Note: B/H forms take the data operand as i32 (low bits used).
-		b.WriteString("declare i32 @llvm.aarch64.crc32b(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32h(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32w(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32x(i32, i64)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32cb(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32ch(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32cw(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.aarch64.crc32cx(i32, i64)\n")
-		b.WriteString("\n")
-		// Attribute group used by some functions to enable optional ISA features.
-		// (Example: "+crc" for hash/crc32 arm64 fast paths.)
-		b.WriteString("attributes #0 = { \"target-features\"=\"+crc\" }\n\n")
-	}
-	if file.Arch == ArchAMD64 && opt.Goarch == "amd64" {
-		b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
-		b.WriteString("declare i32 @cliteErrno()\n")
-		// Generic LLVM intrinsics used by amd64 lowering.
-		b.WriteString("declare i64 @llvm.cttz.i64(i64, i1)\n")
-		b.WriteString("declare i32 @llvm.cttz.i32(i32, i1)\n")
-		b.WriteString("declare i64 @llvm.ctlz.i64(i64, i1)\n")
-		b.WriteString("declare i32 @llvm.ctlz.i32(i32, i1)\n")
-		b.WriteString("declare i64 @llvm.ctpop.i64(i64)\n")
-		b.WriteString("declare i32 @llvm.ctpop.i32(i32)\n")
-		b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
-		b.WriteString("declare double @llvm.sqrt.f64(double)\n")
-		b.WriteString("declare double @llvm.rint.f64(double)\n")
-		b.WriteString("\n")
-		// x86-64 CRC32 (SSE4.2) and PCLMULQDQ intrinsics.
-		b.WriteString("declare i64 @llvm.x86.sse42.crc32.64.64(i64, i64)\n")
-		b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.32(i32, i32)\n")
-		b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.16(i32, i16)\n")
-		b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.8(i32, i8)\n")
-		b.WriteString("declare <2 x i64> @llvm.x86.pclmulqdq(<2 x i64>, <2 x i64>, i8 immarg)\n")
-		// SSE2 helpers used by stdlib asm (e.g. internal/bytealg).
-		b.WriteString("declare i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8>)\n")
-		b.WriteString("\n")
-		// Attribute groups for optional ISA features:
-		// - #0: SSE4.2 CRC32 instruction (Castagnoli fast path)
-		// - #1: PCLMULQDQ + SSE4.1 (IEEE fast path)
-		b.WriteString("attributes #0 = { \"target-features\"=\"+sse4.2,+crc32\" }\n")
-		b.WriteString("attributes #1 = { \"target-features\"=\"+pclmul,+sse4.1\" }\n\n")
-	}
+	// Keep translate.go as the cross-platform pipeline entry.
+	// Architecture-specific declarations live in arch-specific files.
+	emitArchPrelude(&b, file.Arch, opt.Goarch)
 
 	emitExternSBGlobals(&b, file, resolve)
 
