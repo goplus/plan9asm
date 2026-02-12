@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -76,18 +77,27 @@ type matrixReport struct {
 	Failed       int         `json:"failed"`
 }
 
+type compileConfig struct {
+	Enabled bool
+	LLC     string
+	KeepObj bool
+}
+
 func main() {
 	var (
 		goos       = flag.String("goos", runtime.GOOS, "target GOOS")
 		goarch     = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/386)")
 		targets    = flag.String("targets", "", "comma-separated GOOS/GOARCH list (e.g. linux/amd64,windows/arm64)")
-		allTargets = flag.Bool("all-targets", false, "run matrix: darwin/linux/windows x amd64/arm64/386")
+		allTargets = flag.Bool("all-targets", false, "run matrix: darwin/{amd64,arm64} linux/{amd64,arm64,386} windows/{amd64,arm64,386}")
 		patterns   = flag.String("patterns", "std", "comma-separated package patterns")
 		outDir     = flag.String("out", "", "output dir for generated .ll files")
 		annotate   = flag.Bool("annotate", false, "emit source asm lines as IR comments")
 		limit      = flag.Int("limit", 0, "max number of asm files per target (0 means all)")
 		keepGoing  = flag.Bool("keep-going", true, "continue on per-file failures")
 		listOnly   = flag.Bool("list-only", false, "only print asm task list and exit")
+		compile    = flag.Bool("compile", false, "compile generated .ll to .o via llc")
+		llcPath    = flag.String("llc", "", "path to llc executable (auto-detect when empty)")
+		keepObj    = flag.Bool("keep-obj", false, "keep generated .o files when -compile is set")
 		reportOut  = flag.String("report", "", "optional report json path")
 		repoRoot   = flag.String("repo-root", "../..", "repo root for extracting supported instruction set")
 	)
@@ -99,6 +109,10 @@ func main() {
 	}
 
 	specs, err := resolveTargets(*goos, *goarch, *targets, *allTargets)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	ccfg, err := resolveCompileConfig(*compile, *llcPath, *keepObj)
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -122,7 +136,7 @@ func main() {
 			runOutDir = filepath.Join(baseOut, targetID(spec))
 			fmt.Fprintf(os.Stderr, "\n== target %s ==\n", targetID(spec))
 		}
-		rep, tasks, err := runOneTarget(spec, pats, runOutDir, *annotate, *limit, *keepGoing, *listOnly, *repoRoot)
+		rep, tasks, err := runOneTarget(spec, pats, runOutDir, *annotate, *limit, *keepGoing, *listOnly, *repoRoot, ccfg)
 		if err != nil {
 			fatalf("%s: %v", targetID(spec), err)
 		}
@@ -172,6 +186,24 @@ func main() {
 		os.Exit(exitCode)
 	}
 	fmt.Fprintf(os.Stderr, "\nmatrix finished: success=%d total=%d\n", mr.Success, mr.TotalAsm)
+}
+
+func resolveCompileConfig(compile bool, llcPath string, keepObj bool) (compileConfig, error) {
+	cfg := compileConfig{Enabled: compile, LLC: strings.TrimSpace(llcPath), KeepObj: keepObj}
+	if !cfg.Enabled {
+		return cfg, nil
+	}
+	if cfg.LLC != "" {
+		return cfg, nil
+	}
+	names := []string{"llc", "llc-21", "llc-20", "llc-19"}
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			cfg.LLC = p
+			return cfg, nil
+		}
+	}
+	return compileConfig{}, fmt.Errorf("-compile is set but llc is not found in PATH; set -llc explicitly")
 }
 
 func writeReport(path string, payload any) {
@@ -244,7 +276,7 @@ func targetID(t targetSpec) string {
 	return t.Goos + "-" + t.Goarch
 }
 
-func runOneTarget(spec targetSpec, pats []string, outDir string, annotate bool, limit int, keepGoing bool, listOnly bool, repoRoot string) (runReport, []asmTask, error) {
+func runOneTarget(spec targetSpec, pats []string, outDir string, annotate bool, limit int, keepGoing bool, listOnly bool, repoRoot string, ccfg compileConfig) (runReport, []asmTask, error) {
 	arch, err := toPlan9Arch(spec.Goarch)
 	if err != nil {
 		return runReport{}, nil, err
@@ -300,7 +332,7 @@ func runOneTarget(spec targetSpec, pats []string, outDir string, annotate bool, 
 			}
 			continue
 		}
-		err := compileOne(pkg, arch, spec.Goarch, triple, t, annotate)
+		err := compileOne(pkg, arch, spec.Goarch, triple, t, annotate, ccfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[%d/%d] FAIL %s\n", idx, len(tasks), t.AsmFile)
 			printFailureReason(err.Error())
@@ -341,7 +373,7 @@ func runOneTarget(spec targetSpec, pats []string, outDir string, annotate bool, 
 	return rep, nil, nil
 }
 
-func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string, t asmTask, annotate bool) error {
+func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string, t asmTask, annotate bool, ccfg compileConfig) error {
 	src, err := os.ReadFile(t.AsmFile)
 	if err != nil {
 		return fmt.Errorf("read asm: %w", err)
@@ -383,7 +415,40 @@ func compileOne(pkg *packages.Package, arch plan9asm.Arch, goarch, triple string
 	if err := os.WriteFile(t.OutLL, []byte(ll), 0644); err != nil {
 		return fmt.Errorf("write ll: %w", err)
 	}
+	if ccfg.Enabled {
+		objPath := strings.TrimSuffix(t.OutLL, filepath.Ext(t.OutLL)) + ".o"
+		args := []string{"-mtriple=" + triple}
+		args = append(args, llcExtraArgs(goarch)...)
+		args = append(args, "-filetype=obj", t.OutLL, "-o", objPath)
+		cmd := exec.Command(ccfg.LLC, args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			s := strings.TrimSpace(string(out))
+			if s == "" {
+				return fmt.Errorf("llc compile failed: %w", err)
+			}
+			return fmt.Errorf("llc compile failed: %w\n%s", err, s)
+		}
+		if !ccfg.KeepObj {
+			_ = os.Remove(objPath)
+		}
+	}
 	return nil
+}
+
+func llcExtraArgs(goarch string) []string {
+	switch goarch {
+	case "amd64":
+		// Enable ISA features used by stdlib crypto/runtime asm paths.
+		return []string{
+			"-mcpu=haswell",
+			"-mattr=+aes,+ssse3,+sse4.1,+sse4.2,+pclmul,+avx,+avx2,+sha,+popcnt,+adx",
+		}
+	case "arm64":
+		// CRC32 intrinsics in hash/crc32 require +crc.
+		return []string{"-mattr=+crc"}
+	default:
+		return nil
+	}
 }
 
 func loadPkgs(goos, goarch string, patterns []string) ([]*packages.Package, error) {
