@@ -32,6 +32,33 @@ func preprocess(src string) (string, error) {
 		_, ok := macros[name]
 		return ok
 	}
+	evalIfExpr := func(expr string) bool {
+		e := strings.TrimSpace(expr)
+		if e == "" {
+			return false
+		}
+		neg := false
+		for strings.HasPrefix(e, "!") {
+			neg = !neg
+			e = strings.TrimSpace(strings.TrimPrefix(e, "!"))
+		}
+		val := false
+		switch {
+		case strings.HasPrefix(e, "defined(") && strings.HasSuffix(e, ")"):
+			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(e, "defined("), ")"))
+			val = isDefined(name)
+		case strings.HasPrefix(e, "defined ") || strings.HasPrefix(e, "defined\t"):
+			name := strings.TrimSpace(strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(e, "defined "), "defined\t")))
+			val = isDefined(name)
+		default:
+			// Bare identifier in #if.
+			val = isDefined(e)
+		}
+		if neg {
+			return !val
+		}
+		return val
+	}
 
 	// First pass: collect #define, build output lines for further parsing.
 	lines := []string{}
@@ -160,6 +187,32 @@ func preprocess(src string) (string, error) {
 			active = active && st.cond
 			continue
 		}
+		if strings.HasPrefix(trim, "#if") {
+			expr := strings.TrimSpace(strings.TrimPrefix(trim, "#if"))
+			st := ifState{outerActive: active, cond: evalIfExpr(expr)}
+			ifStack = append(ifStack, st)
+			active = active && st.cond
+			continue
+		}
+		if strings.HasPrefix(trim, "#elif") {
+			if len(ifStack) == 0 {
+				return "", fmt.Errorf("line %d: stray #elif", lineno)
+			}
+			top := ifStack[len(ifStack)-1]
+			if top.inElse {
+				return "", fmt.Errorf("line %d: #elif after #else", lineno)
+			}
+			// Only first satisfied branch stays active.
+			if top.cond {
+				active = false
+				continue
+			}
+			expr := strings.TrimSpace(strings.TrimPrefix(trim, "#elif"))
+			top.cond = evalIfExpr(expr)
+			ifStack[len(ifStack)-1] = top
+			active = top.outerActive && top.cond
+			continue
+		}
 		if strings.HasPrefix(trim, "#else") {
 			if len(ifStack) == 0 {
 				return "", fmt.Errorf("line %d: stray #else", lineno)
@@ -233,54 +286,133 @@ func preprocess(src string) (string, error) {
 	sort.Slice(macroNames, func(i, j int) bool { return len(macroNames[i]) > len(macroNames[j]) })
 	var out strings.Builder
 	for _, line := range lines {
-		trimLine := strings.TrimSpace(line)
-
-		expanded := false
-		for _, name := range macroNames {
-			m := macros[name]
-			if len(m.params) == 0 {
-				continue
-			}
-			args, ok := parseMacroCall(trimLine, name, len(m.params))
-			if !ok {
-				continue
-			}
-			out.WriteString(replaceMacroParams(m.body, m.params, args))
+		for _, ex := range expandPPLine(line, macros, macroNames, 0) {
+			out.WriteString(ex)
 			out.WriteString("\n")
-			expanded = true
-			break
 		}
-		if expanded {
-			continue
-		}
-
-		if m, ok := macros[trimLine]; ok && len(m.params) == 0 {
-			out.WriteString(m.body)
-			out.WriteString("\n")
-			continue
-		}
-		// Expand immediate macro refs in-place: $NAME -> $<body>.
-		// This is required by stdlib asm like:
-		//   FMOVD $Ln2Hi, F4
-		// where constants are defined by #define.
-		for _, name := range macroNames {
-			m := macros[name]
-			if len(m.params) != 0 {
-				continue
-			}
-			body := strings.TrimSpace(m.body)
-			if body == "" {
-				continue
-			}
-			line = strings.ReplaceAll(line, "$"+name, "$"+body)
-		}
-		// Expand identifiers inside immediate expressions:
-		//   $(Big - 1) -> $(0x433... - 1)
-		line = expandImmExprMacros(line, macros)
-		out.WriteString(line)
-		out.WriteString("\n")
 	}
 	return out.String(), nil
+}
+
+func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, depth int) []string {
+	if depth >= 16 {
+		return []string{line}
+	}
+	trimLine := strings.TrimSpace(line)
+	if trimLine == "" {
+		return []string{""}
+	}
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) == 0 {
+			continue
+		}
+		args, ok := parseMacroCall(trimLine, name, len(m.params))
+		if !ok {
+			continue
+		}
+		body := replaceMacroParams(m.body, m.params, args)
+		chunks := strings.Split(body, "\n")
+		out := make([]string, 0, len(chunks))
+		for _, ch := range chunks {
+			out = append(out, expandPPLine(strings.TrimSpace(ch), macros, macroNames, depth+1)...)
+		}
+		return out
+	}
+	if m, ok := macros[trimLine]; ok && len(m.params) == 0 {
+		chunks := strings.Split(m.body, "\n")
+		out := make([]string, 0, len(chunks))
+		for _, ch := range chunks {
+			out = append(out, expandPPLine(strings.TrimSpace(ch), macros, macroNames, depth+1)...)
+		}
+		return out
+	}
+	// Expand function-like macro calls that appear inline within a statement,
+	// e.g. "...; ROL16(X12, X15); ...".
+	inlineChanged := false
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) == 0 {
+			continue
+		}
+		nl, changed := expandInlineMacroCalls(line, name, m)
+		if changed {
+			line = nl
+			inlineChanged = true
+		}
+	}
+	if inlineChanged {
+		return expandPPLine(line, macros, macroNames, depth+1)
+	}
+	// Expand object-like macro identifiers inline (e.g. "MOVD NR, R0").
+	if nl, changed := expandIdentMacros(line, macros, macroNames); changed {
+		return expandPPLine(nl, macros, macroNames, depth+1)
+	}
+	// Expand immediate macro refs in-place: $NAME -> $<body>.
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) != 0 {
+			continue
+		}
+		body := strings.TrimSpace(m.body)
+		if body == "" {
+			continue
+		}
+		line = strings.ReplaceAll(line, "$"+name, "$"+body)
+	}
+	// Expand identifiers inside immediate expressions:
+	//   $(Big - 1) -> $(0x433... - 1)
+	line = expandImmExprMacros(line, macros)
+	return []string{line}
+}
+
+func ppIsIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '_'
+}
+
+func expandIdentMacros(line string, macros map[string]ppMacro, macroNames []string) (string, bool) {
+	changed := false
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) != 0 {
+			continue
+		}
+		body := strings.TrimSpace(m.body)
+		if body == "" || body == name {
+			continue
+		}
+		var out strings.Builder
+		i := 0
+		localChanged := false
+		for i < len(line) {
+			j := strings.Index(line[i:], name)
+			if j < 0 {
+				out.WriteString(line[i:])
+				break
+			}
+			j += i
+			k := j + len(name)
+			leftOK := j == 0 || !ppIsIdentChar(line[j-1])
+			rightOK := k >= len(line) || !ppIsIdentChar(line[k])
+			if leftOK && rightOK {
+				out.WriteString(line[i:j])
+				out.WriteString(body)
+				i = k
+				localChanged = true
+				continue
+			}
+			out.WriteString(line[i : j+1])
+			i = j + 1
+		}
+		if localChanged {
+			line = out.String()
+			changed = true
+		}
+	}
+	return line, changed
 }
 
 func expandImmExprMacros(line string, macros map[string]ppMacro) string {
@@ -439,6 +571,73 @@ closeFound:
 		args = append(args, strings.TrimSpace(p))
 	}
 	return args, true
+}
+
+func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
+	if len(m.params) == 0 || line == "" {
+		return line, false
+	}
+	var out strings.Builder
+	changed := false
+	i := 0
+	for i < len(line) {
+		j := strings.Index(line[i:], name+"(")
+		if j < 0 {
+			out.WriteString(line[i:])
+			break
+		}
+		j += i
+		// Identifier boundary check on the left side.
+		if j > 0 && isIdentPart(line[j-1]) {
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		open := j + len(name)
+		if open >= len(line) || line[open] != '(' {
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		depth := 0
+		k := open
+		for ; k < len(line); k++ {
+			switch line[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					goto callFound
+				}
+			}
+		}
+		// Unterminated call; keep tail as-is.
+		out.WriteString(line[i:])
+		return out.String(), changed
+
+	callFound:
+		argText := strings.TrimSpace(line[open+1 : k])
+		args := []string{}
+		if argText != "" {
+			parts := splitTopLevelCSV(argText)
+			args = make([]string, 0, len(parts))
+			for _, p := range parts {
+				args = append(args, strings.TrimSpace(p))
+			}
+		}
+		if len(args) != len(m.params) {
+			// Not this macro invocation; keep one byte and continue scanning.
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		out.WriteString(line[i:j])
+		out.WriteString(replaceMacroParams(m.body, m.params, args))
+		changed = true
+		i = k + 1
+	}
+	return out.String(), changed
 }
 
 func replaceMacroParams(body string, params, args []string) string {

@@ -4,6 +4,10 @@ import "fmt"
 
 func (c *amd64Ctx) lowerSyscall(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
+	case "INT":
+		// Software interrupt/trap path (e.g. runtime.exitThread INT $3).
+		c.b.WriteString("  unreachable\n")
+		return true, true, nil
 	case "SYSCALL":
 		if len(ins.Args) != 0 {
 			return true, false, fmt.Errorf("amd64 SYSCALL expects no operands: %q", ins.Raw)

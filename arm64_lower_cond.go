@@ -25,6 +25,33 @@ func (c *arm64Ctx) lowerCond(op Op, ins Instr) (ok bool, terminated bool, err er
 		fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 %s, i64 %s\n", t, cv, a, bv)
 		return true, false, c.storeReg(ins.Args[3].Reg, "%"+t)
 
+	case "CSELW":
+		// CSELW cond, a, b, dst (32-bit select, zero-extended to i64 register file).
+		if len(ins.Args) != 4 || ins.Args[0].Kind != OpIdent || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("arm64 CSELW expects cond, a, b, dstReg: %q", ins.Raw)
+		}
+		a, err := c.eval64(ins.Args[1], false)
+		if err != nil {
+			return true, false, err
+		}
+		bv, err := c.eval64(ins.Args[2], false)
+		if err != nil {
+			return true, false, err
+		}
+		aw := c.newTmp()
+		bw := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", aw, a)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", bw, bv)
+		cv, err := c.condValue(ins.Args[0].Ident)
+		if err != nil {
+			return true, false, err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %s, i32 %%%s, i32 %%%s\n", t, cv, aw, bw)
+		z := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, t)
+		return true, false, c.storeReg(ins.Args[3].Reg, "%"+z)
+
 	case "CSET":
 		// CSET cond, dst
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpIdent || ins.Args[1].Kind != OpReg {

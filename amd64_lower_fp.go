@@ -376,6 +376,35 @@ func (c *amd64Ctx) loadXVecOperand(op Operand) (string, error) {
 	}
 }
 
+func (c *amd64Ctx) loadYVecOperand(op Operand) (string, error) {
+	switch op.Kind {
+	case OpReg:
+		if _, ok := amd64ParseYReg(op.Reg); !ok {
+			return "", fmt.Errorf("amd64: expected Y register operand, got %s", op.String())
+		}
+		return c.loadY(op.Reg)
+	case OpMem:
+		addr, err := c.addrFromMem(op.Mem)
+		if err != nil {
+			return "", err
+		}
+		p := c.ptrFromAddrI64(addr)
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load <32 x i8>, ptr %s, align 1\n", t, p)
+		return "%" + t, nil
+	case OpSym:
+		p, err := c.ptrFromSB(op.Sym)
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load <32 x i8>, ptr %s, align 1\n", t, p)
+		return "%" + t, nil
+	default:
+		return "", fmt.Errorf("amd64: unsupported Y-vector operand %s", op.String())
+	}
+}
+
 func (c *amd64Ctx) loadXLowI64(r Reg) (string, error) {
 	xv, err := c.loadX(r)
 	if err != nil {

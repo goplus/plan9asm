@@ -158,6 +158,12 @@ func (c *arm64Ctx) scanUsedRegs() {
 	}
 	// Ensure return reg exists.
 	markReg(Reg("R0"))
+	// Keep lowering permissive for hand-written stubs that reference ad-hoc
+	// registers via macros/aliases not captured in signatures.
+	for i := 0; i <= 31; i++ {
+		markReg(Reg(fmt.Sprintf("R%d", i)))
+	}
+	markReg(SP)
 }
 
 func (c *arm64Ctx) emitEntryAllocasAndArgInit() error {
@@ -408,6 +414,7 @@ func (c *arm64Ctx) ptrFromSB(sym string) (ptr string, err error) {
 	if !ok {
 		return "", fmt.Errorf("invalid (SB) sym ref: %q", sym)
 	}
+	base = strings.TrimPrefix(base, "$")
 	res := base
 	if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
 		res = c.resolve(base)

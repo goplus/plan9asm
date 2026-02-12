@@ -89,8 +89,8 @@ func (c *amd64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 		return true, false, c.storeReg(srcReg.Reg, old64)
 
 	case "XCHGB", "XCHGL", "XCHGQ":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpMem {
-			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem: %q", op, ins.Raw)
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 %s expects srcReg, dst: %q", op, ins.Raw)
 		}
 		srcReg := ins.Args[0]
 		if srcReg.Kind != OpReg {
@@ -107,13 +107,64 @@ func (c *amd64Ctx) lowerAtomic(op Op, ins Instr) (ok bool, terminated bool, err 
 		if err != nil {
 			return true, false, err
 		}
+		if ins.Args[1].Kind == OpReg {
+			dstReg := ins.Args[1].Reg
+			dst64, err := c.loadReg(dstReg)
+			if err != nil {
+				return true, false, err
+			}
+			switch ty {
+			case I64:
+				if err := c.storeReg(srcReg.Reg, dst64); err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeReg(dstReg, src64)
+			case I32:
+				s32 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", s32, src64)
+				d32 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", d32, dst64)
+				sz := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", sz, s32)
+				dz := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", dz, d32)
+				if err := c.storeReg(srcReg.Reg, "%"+dz); err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeReg(dstReg, "%"+sz)
+			default:
+				s8 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", s8, src64)
+				d8 := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", d8, dst64)
+				sz := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", sz, s8)
+				dz := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", dz, d8)
+				if err := c.storeReg(srcReg.Reg, "%"+dz); err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeReg(dstReg, "%"+sz)
+			}
+		}
+		if ins.Args[1].Kind != OpMem && ins.Args[1].Kind != OpSym {
+			return true, false, fmt.Errorf("amd64 %s expects srcReg, mem/reg: %q", op, ins.Raw)
+		}
 		src, err := c.amd64AtomicTruncFromI64(src64, ty)
 		if err != nil {
 			return true, false, err
 		}
-		ptr, err := c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
-		if err != nil {
-			return true, false, err
+		ptr := ""
+		if ins.Args[1].Kind == OpMem {
+			ptr, err = c.amd64AtomicPtrFromMem(ins.Args[1].Mem)
+			if err != nil {
+				return true, false, err
+			}
+		} else {
+			ptr, err = c.ptrFromSB(ins.Args[1].Sym)
+			if err != nil {
+				return true, false, err
+			}
 		}
 		old := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = atomicrmw xchg ptr %s, %s %s seq_cst\n", old, ptr, ty, src)

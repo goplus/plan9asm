@@ -8,6 +8,44 @@ import (
 type amd64EmitBr func(target string)
 type amd64EmitCondBr func(cond string, target string, fall string) error
 
+func emitAMD64Prelude(b *strings.Builder) {
+	b.WriteString("declare i64 @syscall(i64, i64, i64, i64, i64, i64, i64)\n")
+	b.WriteString("declare i32 @cliteErrno()\n")
+	// Generic LLVM intrinsics used by amd64 lowering.
+	b.WriteString("declare i64 @llvm.cttz.i64(i64, i1)\n")
+	b.WriteString("declare i32 @llvm.cttz.i32(i32, i1)\n")
+	b.WriteString("declare i64 @llvm.ctlz.i64(i64, i1)\n")
+	b.WriteString("declare i32 @llvm.ctlz.i32(i32, i1)\n")
+	b.WriteString("declare i64 @llvm.ctpop.i64(i64)\n")
+	b.WriteString("declare i32 @llvm.ctpop.i32(i32)\n")
+	b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
+	b.WriteString("declare i32 @llvm.bswap.i32(i32)\n")
+	b.WriteString("declare double @llvm.sqrt.f64(double)\n")
+	b.WriteString("declare double @llvm.rint.f64(double)\n")
+	b.WriteString("declare <16 x i8> @llvm.x86.ssse3.pshuf.b.128(<16 x i8>, <16 x i8>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesenc(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesenclast(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesdec(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesdeclast(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesimc(<2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aeskeygenassist(<2 x i64>, i8 immarg)\n")
+	b.WriteString("\n")
+	// x86-64 CRC32 (SSE4.2) and PCLMULQDQ intrinsics.
+	b.WriteString("declare i64 @llvm.x86.sse42.crc32.64.64(i64, i64)\n")
+	b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.32(i32, i32)\n")
+	b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.16(i32, i16)\n")
+	b.WriteString("declare i32 @llvm.x86.sse42.crc32.32.8(i32, i8)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.pclmulqdq(<2 x i64>, <2 x i64>, i8 immarg)\n")
+	// SSE2 helpers used by stdlib asm (e.g. internal/bytealg).
+	b.WriteString("declare i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8>)\n")
+	b.WriteString("\n")
+	// Attribute groups for optional ISA features:
+	// - #0: SSE4.2 CRC32 instruction (Castagnoli fast path)
+	// - #1: PCLMULQDQ + SSE4.1 (IEEE fast path)
+	b.WriteString("attributes #0 = { \"target-features\"=\"+sse4.2,+crc32\" }\n")
+	b.WriteString("attributes #1 = { \"target-features\"=\"+pclmul,+sse4.1\" }\n\n")
+}
+
 func translateFuncAMD64(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotateSource bool) error {
 	fmt.Fprintf(b, "define %s %s(", sig.Ret, llvmGlobal(sig.Name))
 	for i, t := range sig.Args {
@@ -76,12 +114,17 @@ func (c *amd64Ctx) lowerBlocks() error {
 
 func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emitCondBr amd64EmitCondBr) (terminated bool, err error) {
 	op := strings.ToUpper(string(ins.Op))
+	if strings.HasPrefix(op, "GET_TLS(") {
+		// Macro-expanded helper from go_tls.h. Keep current simplified model.
+		return false, nil
+	}
 	switch Op(op) {
 	case OpTEXT, OpBYTE:
 		return false, nil
 	case OpRET:
 		return true, c.lowerRET()
-	case "PCALIGN":
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "NOP", "ADJSP", "CLD", "STD", "REP",
+		"PUSH_REGS_HOST_TO_ABI0()", "POP_REGS_HOST_TO_ABI0()":
 		// Alignment directive emitted by stdlib asm; no semantic effect in our IR.
 		return false, nil
 	}

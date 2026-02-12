@@ -13,23 +13,26 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		}
 		switch ins.Args[0].Kind {
 		case OpReg:
-			// Indirect call via register (used by stdlib vdso/syscall stubs).
 			addr, err := c.loadReg(ins.Args[0].Reg)
 			if err != nil {
 				return true, false, err
 			}
-			fptr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", fptr, addr)
-			di, _ := c.loadReg(DI)
-			si, _ := c.loadReg(SI)
-			dx, _ := c.loadReg(DX)
-			cx, _ := c.loadReg(CX)
-			r8, _ := c.loadReg(Reg("R8"))
-			r9, _ := c.loadReg(Reg("R9"))
-			ret := c.newTmp()
-			// Model as a generic C-ABI style call carrying register arguments.
-			fmt.Fprintf(c.b, "  %%%s = call i64 %%%s(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", ret, fptr, di, si, dx, cx, r8, r9)
-			if err := c.storeReg(AX, "%"+ret); err != nil {
+			if err := c.callIndirectAddr(addr); err != nil {
+				return true, false, err
+			}
+			return true, false, nil
+		case OpMem:
+			// Go asm commonly writes indirect call via register as CALL (DX).
+			// Treat plain (REG) as indirect-through-register target.
+			mem := ins.Args[0].Mem
+			if mem.Base == "" || mem.Index != "" || mem.Scale != 0 || mem.Off != 0 {
+				return true, false, fmt.Errorf("amd64 CALL unsupported mem target: %q", ins.Raw)
+			}
+			addr, err := c.loadReg(mem.Base)
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.callIndirectAddr(addr); err != nil {
 				return true, false, err
 			}
 			return true, false, nil
@@ -45,7 +48,7 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	case "JMP",
 		"JE", "JEQ", "JZ", "JNE", "JNZ",
 		"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-		"JA", "JAE", "JB", "JBE", "JLS",
+		"JA", "JHI", "JAE", "JHS", "JB", "JLO", "JBE", "JLS",
 		"JC", "JNC", "JCC":
 		// ok
 	default:
@@ -57,9 +60,36 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	target := ""
 	pcRel := false
 	pcOff := int64(0)
+	knownBlock := func(name string) bool {
+		for _, blk := range c.blocks {
+			if blk.name == name {
+				return true
+			}
+		}
+		return false
+	}
 	switch ins.Args[0].Kind {
 	case OpIdent:
 		target = ins.Args[0].Ident
+	case OpReg:
+		// Labels like V1 may be tokenized as registers. Prefer block labels;
+		// otherwise treat JMP reg as an indirect tail jump.
+		name := string(ins.Args[0].Reg)
+		if knownBlock(name) {
+			target = name
+			break
+		}
+		if op == "JMP" {
+			addr, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
+				return true, false, err
+			}
+			return true, true, nil
+		}
+		return true, false, fmt.Errorf("amd64 %s invalid register target: %q", op, ins.Raw)
 	case OpSym:
 		s := strings.TrimSpace(ins.Args[0].Sym)
 		// Treat JMP foo(SB) as a tailcall to another TEXT (common in stdlib asm).
@@ -81,12 +111,34 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			pcOff = ins.Args[0].Mem.Off
 			break
 		}
+		if op == "JMP" {
+			mem := ins.Args[0].Mem
+			if mem.Base != "" && mem.Index == "" && mem.Scale == 0 && mem.Off == 0 {
+				addr, err := c.loadReg(mem.Base)
+				if err != nil {
+					return true, false, err
+				}
+				if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
+					return true, false, err
+				}
+				return true, true, nil
+			}
+		}
 		fallthrough
 	default:
 		return true, false, fmt.Errorf("amd64 %s invalid target: %q", op, ins.Raw)
 	}
 	if !pcRel && target == "" {
 		return true, false, fmt.Errorf("amd64 %s empty target: %q", op, ins.Raw)
+	}
+	if pcRel {
+		cur := c.blockBase[bi] + ii
+		tgt := cur + int(pcOff)
+		tbi, ok := c.blockByIdx[tgt]
+		if !ok || tbi < 0 || tbi >= len(c.blocks) {
+			return true, false, fmt.Errorf("amd64 %s invalid PC-relative target %d(PC): %q", op, pcOff, ins.Raw)
+		}
+		target = c.blocks[tbi].name
 	}
 
 	if op == "JMP" {
@@ -99,16 +151,6 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		return true, false, fmt.Errorf("amd64 %s has no fallthrough block: %q", op, ins.Raw)
 	}
 	fall := c.blocks[bi+1].name
-	if pcRel {
-		cur := c.blockBase[bi] + ii
-		tgt := cur + int(pcOff)
-		tbi, ok := c.blockByIdx[tgt]
-		if !ok || tbi < 0 || tbi >= len(c.blocks) {
-			return true, false, fmt.Errorf("amd64 %s invalid PC-relative target %d(PC): %q", op, pcOff, ins.Raw)
-		}
-		target = c.blocks[tbi].name
-	}
-
 	cond := ""
 	switch op {
 	case "JE", "JEQ", "JZ":
@@ -139,16 +181,14 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		t2 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
 		cond = "%" + t2
-	case "JB":
-		cond = c.loadFlag(c.flagsCFSlot)
-	case "JC":
+	case "JB", "JLO", "JC":
 		cond = c.loadFlag(c.flagsCFSlot)
 	case "JNC", "JCC":
 		cf := c.loadFlag(c.flagsCFSlot)
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
 		cond = "%" + t
-	case "JAE":
+	case "JAE", "JHS":
 		cf := c.loadFlag(c.flagsCFSlot)
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
@@ -159,7 +199,7 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, cf, z)
 		cond = "%" + t
-	case "JA":
+	case "JA", "JHI":
 		cf := c.loadFlag(c.flagsCFSlot)
 		z := c.loadFlag(c.flagsZSlot)
 		t1 := c.newTmp()
@@ -175,6 +215,28 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		return true, false, err
 	}
 	return true, true, nil
+}
+
+func (c *amd64Ctx) callIndirectAddr(addr string) error {
+	fptr := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", fptr, addr)
+	di, _ := c.loadReg(DI)
+	si, _ := c.loadReg(SI)
+	dx, _ := c.loadReg(DX)
+	cx, _ := c.loadReg(CX)
+	r8, _ := c.loadReg(Reg("R8"))
+	r9, _ := c.loadReg(Reg("R9"))
+	ret := c.newTmp()
+	// Model as a generic C-ABI style call carrying register arguments.
+	fmt.Fprintf(c.b, "  %%%s = call i64 %%%s(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", ret, fptr, di, si, dx, cx, r8, r9)
+	return c.storeReg(AX, "%"+ret)
+}
+
+func (c *amd64Ctx) tailCallIndirectAddrAndRet(addr string) error {
+	if err := c.callIndirectAddr(addr); err != nil {
+		return err
+	}
+	return c.lowerRET()
 }
 
 func (c *amd64Ctx) callSym(symOp Operand) error {
@@ -394,8 +456,32 @@ func (c *amd64Ctx) tailCallAndRet(symOp Operand) error {
 
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call %s %s(%s)\n", t, csig.Ret, llvmGlobal(callee), strings.Join(args, ", "))
+	if c.sig.Ret == Void {
+		c.b.WriteString("  ret void\n")
+		return nil
+	}
 	if c.sig.Ret != csig.Ret {
-		return fmt.Errorf("amd64 tailcall return type mismatch for %q: caller %s, callee %s", callee, c.sig.Ret, csig.Ret)
+		conv := c.newTmp()
+		switch {
+		case csig.Ret == I64 && (c.sig.Ret == I1 || c.sig.Ret == I8 || c.sig.Ret == I16 || c.sig.Ret == I32):
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to %s\n", conv, t, c.sig.Ret)
+			fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, conv)
+			return nil
+		case (csig.Ret == I1 || csig.Ret == I8 || csig.Ret == I16 || csig.Ret == I32) && c.sig.Ret == I64:
+			fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", conv, csig.Ret, t)
+			fmt.Fprintf(c.b, "  ret i64 %%%s\n", conv)
+			return nil
+		case csig.Ret == Ptr && c.sig.Ret == I64:
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %%%s to i64\n", conv, t)
+			fmt.Fprintf(c.b, "  ret i64 %%%s\n", conv)
+			return nil
+		case csig.Ret == I64 && c.sig.Ret == Ptr:
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", conv, t)
+			fmt.Fprintf(c.b, "  ret ptr %%%s\n", conv)
+			return nil
+		default:
+			return fmt.Errorf("amd64 tailcall return type mismatch for %q: caller %s, callee %s", callee, c.sig.Ret, csig.Ret)
+		}
 	}
 	fmt.Fprintf(c.b, "  ret %s %%%s\n", c.sig.Ret, t)
 	return nil

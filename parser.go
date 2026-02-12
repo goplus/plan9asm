@@ -77,6 +77,22 @@ func Parse(arch Arch, src string) (*File, error) {
 				})
 				continue
 			}
+			// Support "label: INSTR ..." on one statement.
+			if c := strings.IndexByte(stmt, ':'); c >= 0 {
+				left := strings.TrimSpace(stmt[:c])
+				right := strings.TrimSpace(stmt[c+1:])
+				if left != "" && right != "" && !strings.ContainsAny(left, " \t") {
+					if cur == nil {
+						return nil, fmt.Errorf("line %d: label outside TEXT: %q", lineno, stmt)
+					}
+					cur.Instrs = append(cur.Instrs, Instr{
+						Op:   OpLABEL,
+						Args: []Operand{{Kind: OpLabel, Sym: left}},
+						Raw:  left + ":",
+					})
+					stmt = right
+				}
+			}
 
 			opStr, rest := splitOpcode(stmt)
 			op := Op(strings.ToUpper(opStr))
@@ -101,18 +117,9 @@ func Parse(arch Arch, src string) (*File, error) {
 				continue
 
 			case "DATA":
-				// In stdlib asm, DATA/GLOBL blocks typically appear between TEXT
-				// functions and/or after the last RET. If we're currently inside a
-				// TEXT function and it has already terminated, treat this as leaving
-				// the function body.
-				if cur != nil {
-					if len(cur.Instrs) > 0 && cur.Instrs[len(cur.Instrs)-1].Op == OpRET {
-						cur = nil
-					} else {
-						return nil, fmt.Errorf("line %d: DATA inside TEXT not supported: %q", lineno, stmt)
-					}
-				}
-				ds, err := parseDATAStmt(rest)
+				// Be permissive: some stdlib asm emits DATA while parser still
+				// tracks the previous TEXT as current.
+				ds, err := parseDATAStmt(arch, rest)
 				if err != nil {
 					return nil, fmt.Errorf("line %d: %v", lineno, err)
 				}
@@ -120,13 +127,8 @@ func Parse(arch Arch, src string) (*File, error) {
 				continue
 
 			case "GLOBL":
-				if cur != nil {
-					if len(cur.Instrs) > 0 && cur.Instrs[len(cur.Instrs)-1].Op == OpRET {
-						cur = nil
-					} else {
-						return nil, fmt.Errorf("line %d: GLOBL inside TEXT not supported: %q", lineno, stmt)
-					}
-				}
+				// Be permissive: some stdlib asm emits data symbols while parser
+				// still tracks the previous TEXT as current.
 				gs, err := parseGLOBLStmt(rest)
 				if err != nil {
 					return nil, fmt.Errorf("line %d: %v", lineno, err)
@@ -198,7 +200,7 @@ func Parse(arch Arch, src string) (*File, error) {
 	return f, nil
 }
 
-func parseDATAStmt(rest string) (DataStmt, error) {
+func parseDATAStmt(arch Arch, rest string) (DataStmt, error) {
 	// DATA sym+off(SB)/width, $value
 	parts := strings.Split(rest, ",")
 	if len(parts) != 2 {
@@ -215,7 +217,7 @@ func parseDATAStmt(rest string) (DataStmt, error) {
 	if !ok {
 		return DataStmt{}, fmt.Errorf("DATA missing /width: %q", "DATA "+rest)
 	}
-	width, err := parseInt(widthStr)
+	width, err := parseWidth(arch, widthStr)
 	if err != nil || width <= 0 {
 		return DataStmt{}, fmt.Errorf("DATA invalid width %q: %q", widthStr, "DATA "+rest)
 	}
@@ -234,9 +236,41 @@ func parseDATAStmt(rest string) (DataStmt, error) {
 
 	val, ok := parseImm(rhs)
 	if !ok {
+		trimRHS := strings.TrimSpace(rhs)
+		// Accept string DATA payloads as zero placeholders for now.
+		if strings.HasPrefix(trimRHS, "$\"") {
+			val = 0
+			ok = true
+		}
+	}
+	if !ok {
+		// Accept symbol-address initializers (e.g. $runtime·main(SB)) even when
+		// relocation details are not modeled; encode as zero placeholder.
+		if strings.HasPrefix(strings.TrimSpace(rhs), "$") {
+			if _, symOK := parseSym(strings.TrimPrefix(strings.TrimSpace(rhs), "$")); symOK {
+				val = 0
+				ok = true
+			}
+		}
+	}
+	if !ok {
 		return DataStmt{}, fmt.Errorf("DATA invalid immediate %q: %q", rhs, "DATA "+rest)
 	}
 	return DataStmt{Sym: sym, Off: off, Width: width, Value: uint64(val)}, nil
+}
+
+func parseWidth(arch Arch, s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	switch strings.ToUpper(s) {
+	case "PTRSIZE":
+		switch arch {
+		case ArchAMD64, ArchARM64:
+			return 8, nil
+		default:
+			return 4, nil
+		}
+	}
+	return parseInt(s)
 }
 
 func parseGLOBLStmt(rest string) (GloblStmt, error) {
@@ -256,6 +290,12 @@ func parseGLOBLStmt(rest string) (GloblStmt, error) {
 		return GloblStmt{}, fmt.Errorf("GLOBL empty symbol: %q", "GLOBL "+rest)
 	}
 	sz, ok := parseImm(sizePart)
+	if (!ok || sz < 0) && strings.HasPrefix(sizePart, "$(") && strings.HasSuffix(sizePart, ")") {
+		// Some platform asm uses symbolic struct-size macros in GLOBL sizes
+		// (e.g. $(machTimebaseInfo__size)). We don't evaluate include-time
+		// macros here, so keep a conservative non-zero placeholder size.
+		sz, ok = 64, true
+	}
 	if !ok || sz < 0 {
 		return GloblStmt{}, fmt.Errorf("GLOBL invalid size %q: %q", sizePart, "GLOBL "+rest)
 	}

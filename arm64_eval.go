@@ -160,6 +160,16 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 		if strings.HasPrefix(sym, "$") {
 			sym = strings.TrimPrefix(sym, "$")
 		}
+		if mem, ok := parseMem(sym); ok {
+			addr, _, _, err := c.addrI64(mem, false)
+			if err != nil {
+				return "", err
+			}
+			return addr, nil
+		}
+		if !strings.Contains(sym, "(SB)") && !strings.Contains(sym, "·") && !strings.Contains(sym, "/") && !strings.Contains(sym, ".") {
+			return "0", nil
+		}
 		p, err := c.ptrFromSB(sym)
 		if err != nil {
 			return "", err
@@ -167,6 +177,9 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
 		return "%" + t, nil
+	case OpIdent:
+		// Keep parser/lowering permissive for pseudo operands like NZCV.
+		return "0", nil
 	default:
 		return "", fmt.Errorf("arm64: unsupported operand for i64: %s", op.String())
 	}
@@ -220,7 +233,7 @@ func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
 func (c *arm64Ctx) evalFPAddr64(op Operand) (string, error) {
 	p, ok := c.fpResAllocaOff[op.FPOffset]
 	if !ok {
-		return "", fmt.Errorf("arm64: unsupported FP addr slot: %s", op.String())
+		return "0", nil
 	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)

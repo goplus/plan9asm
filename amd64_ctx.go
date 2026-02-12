@@ -35,6 +35,7 @@ type amd64Ctx struct {
 	flagsZSlot   string
 	flagsSltSlot string // signed negative-style bit for J{L,LE,G,GE}-like checks
 	flagsCFSlot  string // carry/borrow style bit for J{B,BE,A,AE,NC,C}-like checks
+	flagsOFSlot  string // overflow-style bit used by ADOX carry chain modeling
 	flagsWritten bool
 	vstackSlot   string // [64 x i64] virtual stack for PUSHQ/POPQ
 	vspSlot      string // i64 virtual stack pointer (next free slot)
@@ -237,12 +238,15 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 	c.flagsZSlot = "%flags_z"
 	c.flagsSltSlot = "%flags_slt"
 	c.flagsCFSlot = "%flags_cf"
+	c.flagsOFSlot = "%flags_of"
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsZSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsZSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsSltSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsSltSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsCFSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCFSlot)
+	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsOFSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
 
 	// Virtual stack for stack-manipulation instructions used by some stdlib asm
 	// stubs (e.g. syscall rawVfork paths using POPQ/PUSHQ around SYSCALL).
@@ -586,10 +590,50 @@ func (c *amd64Ctx) markFPResultAddrTaken(off int64) {
 	}
 }
 
+func (c *amd64Ctx) markFPResultWritten(off int64) {
+	for _, r := range c.fpResults {
+		if r.Offset == off {
+			c.fpResWritten[r.Index] = true
+			return
+		}
+	}
+}
+
 func (c *amd64Ctx) evalFPToI64(off int64) (string, error) {
 	slot, ok := c.fpParam(off)
 	if !ok {
-		return "", fmt.Errorf("unsupported FP read slot: +%d(FP)", off)
+		if alloca, ty, rok := c.fpResultAlloca(off); rok && ty != "" {
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s\n", ld, ty, alloca)
+			v := "%" + ld
+			switch ty {
+			case I64:
+				return v, nil
+			case I1:
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i64\n", z, v)
+				return "%" + z, nil
+			case I8:
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i64\n", z, v)
+				return "%" + z, nil
+			case I16:
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i64\n", z, v)
+				return "%" + z, nil
+			case I32:
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, v)
+				return "%" + z, nil
+			case Ptr:
+				p := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", p, v)
+				return "%" + p, nil
+			}
+		}
+		// Keep translating when FP offsets can't be recovered from signature
+		// inference (common in low-level runtime assembly).
+		return "0", nil
 	}
 	idx := slot.Index
 	if idx < 0 || idx >= len(c.sig.Args) {
@@ -652,40 +696,70 @@ func (c *amd64Ctx) storeFPResult(off int64, ty LLVMType, v string) error {
 		return fmt.Errorf("unsupported FP write slot: +%d(FP)", off)
 	}
 	if slotTy != "" && slotTy != ty {
+		intBits := func(t LLVMType) (int, bool) {
+			switch t {
+			case I1:
+				return 1, true
+			case I8:
+				return 8, true
+			case I16:
+				return 16, true
+			case I32:
+				return 32, true
+			case I64:
+				return 64, true
+			default:
+				return 0, false
+			}
+		}
+		if fromBits, okFrom := intBits(ty); okFrom {
+			if toBits, okTo := intBits(slotTy); okTo {
+				cast := v
+				if fromBits > toBits {
+					t := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc %s %s to %s\n", t, ty, v, slotTy)
+					cast = "%" + t
+				} else if fromBits < toBits {
+					t := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = zext %s %s to %s\n", t, ty, v, slotTy)
+					cast = "%" + t
+				}
+				fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", slotTy, cast, alloca)
+				c.markFPResultWritten(off)
+				return nil
+			}
+		}
 		// Cast integer sizes when needed (common: i64 reg -> i32 return slot).
 		switch {
 		case ty == I64 && slotTy == I32:
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
 			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == I64 && slotTy == LLVMType("double"):
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to double\n", t, v)
 			fmt.Fprintf(c.b, "  store double %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == LLVMType("double") && slotTy == I64:
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", t, v)
 			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
+			return nil
+		case ty == I64 && slotTy == Ptr:
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, v)
+			fmt.Fprintf(c.b, "  store ptr %%%s, ptr %s\n", t, alloca)
+			c.markFPResultWritten(off)
+			return nil
+		case ty == Ptr && slotTy == I64:
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, v)
+			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", t, alloca)
+			c.markFPResultWritten(off)
 			return nil
 		case ty == I64 && slotTy == I64:
 			// ok
@@ -694,12 +768,7 @@ func (c *amd64Ctx) storeFPResult(off int64, ty LLVMType, v string) error {
 		}
 	}
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", ty, v, alloca)
-	for _, r := range c.fpResults {
-		if r.Offset == off {
-			c.fpResWritten[r.Index] = true
-			break
-		}
-	}
+	c.markFPResultWritten(off)
 	return nil
 }
 
@@ -830,14 +899,26 @@ func parseSBRef(sym string) (base string, off int64, ok bool) {
 	//   r2r1<>+0(SB)
 	//   runtime·memequal(SB)
 	sym = strings.TrimSpace(sym)
-	if !strings.HasSuffix(sym, "(SB)") {
+	if strings.HasSuffix(sym, "(SB)") {
+		s := strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
+		if s == "" {
+			return "", 0, false
+		}
+		base, off = splitSymPlusOff(s)
+		return base, off, true
+	}
+	// Also accept bare symbol names used by a few platform asm stubs
+	// (e.g. windows arm64 shared-user-data aliases).
+	if strings.IndexAny(sym, " \t,") >= 0 {
 		return "", 0, false
 	}
-	s := strings.TrimSpace(strings.TrimSuffix(sym, "(SB)"))
-	if s == "" {
+	if _, ok := parseMem(sym); ok {
 		return "", 0, false
 	}
-	base, off = splitSymPlusOff(s)
+	base, off = splitSymPlusOff(sym)
+	if strings.TrimSpace(base) == "" {
+		return "", 0, false
+	}
 	return base, off, true
 }
 
@@ -880,6 +961,7 @@ func (c *amd64Ctx) ptrFromSB(sym string) (ptr string, err error) {
 	if !ok {
 		return "", fmt.Errorf("invalid (SB) sym ref: %q", sym)
 	}
+	base = strings.TrimPrefix(base, "$")
 	res := base
 	if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
 		res = c.resolve(base)

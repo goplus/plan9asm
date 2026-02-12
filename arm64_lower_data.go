@@ -20,8 +20,10 @@ func (c *arm64Ctx) lowerData(op Op, postInc bool, ins Instr) (ok bool, terminate
 			return true, false, c.storeMem(dst.Mem, 64, false, v)
 		case OpFP:
 			return true, false, c.storeFPResult64(dst.FPOffset, v)
+		case OpSym:
+			return true, false, nil
 		default:
-			return true, false, fmt.Errorf("arm64 MOVD unsupported dst: %q", ins.Raw)
+			return true, false, nil
 		}
 
 	case "MOVB":
@@ -82,8 +84,43 @@ func (c *arm64Ctx) lowerData(op Op, postInc bool, ins Instr) (ok bool, terminate
 			return true, false, c.storeMem(dst.Mem, 32, false, v)
 		case OpFP:
 			return true, false, c.storeFPResult64(dst.FPOffset, v)
+		case OpSym:
+			return true, false, nil
 		default:
-			return true, false, fmt.Errorf("arm64 MOVW unsupported dst: %q", ins.Raw)
+			return true, false, nil
+		}
+
+	case "MOVH":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 MOVH expects 2 operands: %q", ins.Raw)
+		}
+		src, dst := ins.Args[0], ins.Args[1]
+		v := ""
+		var err error
+		switch src.Kind {
+		case OpMem:
+			v, err = c.loadMem(src.Mem, 16, postInc)
+		default:
+			v, err = c.eval64(src, false)
+		}
+		if err != nil {
+			return true, false, err
+		}
+		switch dst.Kind {
+		case OpReg:
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v)
+			z := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i16 %%%s to i64\n", z, t)
+			return true, false, c.storeReg(dst.Reg, "%"+z)
+		case OpMem:
+			return true, false, c.storeMem(dst.Mem, 16, false, v)
+		case OpFP:
+			return true, false, c.storeFPResult64(dst.FPOffset, v)
+		case OpSym:
+			return true, false, nil
+		default:
+			return true, false, nil
 		}
 
 	case "MOVWU":
@@ -107,6 +144,15 @@ func (c *arm64Ctx) lowerData(op Op, postInc bool, ins Instr) (ok bool, terminate
 				return true, false, err
 			}
 			return true, false, c.storeReg(dst.Reg, v)
+		case OpMem:
+			if src.Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 MOVWU expects reg, mem: %q", ins.Raw)
+			}
+			v, err := c.loadReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeMem(dst.Mem, 32, postInc, v)
 		case OpFP:
 			if src.Kind != OpReg {
 				return true, false, fmt.Errorf("arm64 MOVWU expects reg, fp: %q", ins.Raw)
@@ -121,82 +167,165 @@ func (c *arm64Ctx) lowerData(op Op, postInc bool, ins Instr) (ok bool, terminate
 		}
 
 	case "MOVHU":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 MOVHU expects (mem|fp), reg: %q", ins.Raw)
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 MOVHU expects 2 operands: %q", ins.Raw)
 		}
-		v := ""
-		var err error
-		switch ins.Args[0].Kind {
-		case OpMem:
-			v, err = c.loadMem(ins.Args[0].Mem, 16, postInc)
-		case OpFP:
-			v, err = c.eval64(ins.Args[0], false)
-		default:
-			return true, false, fmt.Errorf("arm64 MOVHU unsupported src: %q", ins.Raw)
+		src, dst := ins.Args[0], ins.Args[1]
+		if dst.Kind == OpReg {
+			v := ""
+			var err error
+			switch src.Kind {
+			case OpMem:
+				v, err = c.loadMem(src.Mem, 16, postInc)
+			case OpFP:
+				v, err = c.eval64(src, false)
+			default:
+				return true, false, fmt.Errorf("arm64 MOVHU unsupported src: %q", ins.Raw)
+			}
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(dst.Reg, v)
 		}
-		if err != nil {
-			return true, false, err
+		if dst.Kind == OpMem {
+			if src.Kind != OpReg {
+				return true, false, fmt.Errorf("arm64 MOVHU expects reg, mem: %q", ins.Raw)
+			}
+			v, err := c.loadReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeMem(dst.Mem, 16, postInc, v)
 		}
-		return true, false, c.storeReg(ins.Args[1].Reg, v)
+		return true, false, fmt.Errorf("arm64 MOVHU unsupported dst: %q", ins.Raw)
 
 	case "MOVBU":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("arm64 MOVBU expects (mem|fp|sym), reg: %q", ins.Raw)
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("arm64 MOVBU expects 2 operands: %q", ins.Raw)
 		}
-		v := ""
-		var err error
-		switch ins.Args[0].Kind {
-		case OpMem:
-			v, err = c.loadMem(ins.Args[0].Mem, 8, postInc)
-		case OpFP:
-			v, err = c.eval64(ins.Args[0], false)
-		case OpSym:
-			p, perr := c.ptrFromSB(ins.Args[0].Sym)
-			if perr != nil {
-				return true, false, perr
+		src, dst := ins.Args[0], ins.Args[1]
+		if dst.Kind == OpReg {
+			v := ""
+			var err error
+			switch src.Kind {
+			case OpMem:
+				v, err = c.loadMem(src.Mem, 8, postInc)
+			case OpFP:
+				v, err = c.eval64(src, false)
+			case OpSym:
+				p, perr := c.ptrFromSB(src.Sym)
+				if perr != nil {
+					return true, false, perr
+				}
+				t := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s\n", t, p)
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", z, t)
+				v = "%" + z
+			case OpReg:
+				v, err = c.loadReg(src.Reg)
+				if err == nil {
+					t := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
+					z := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", z, t)
+					v = "%" + z
+				}
+			default:
+				return true, false, fmt.Errorf("arm64 MOVBU unsupported src: %q", ins.Raw)
+			}
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeReg(dst.Reg, v)
+		}
+		if src.Kind == OpReg && dst.Kind == OpMem {
+			v, err := c.loadReg(src.Reg)
+			if err != nil {
+				return true, false, err
+			}
+			return true, false, c.storeMem(dst.Mem, 8, postInc, v)
+		}
+		if src.Kind == OpReg && dst.Kind == OpFP {
+			v, err := c.loadReg(src.Reg)
+			if err != nil {
+				return true, false, err
 			}
 			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s\n", t, p)
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
 			z := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", z, t)
-			v = "%" + z
-		default:
-			return true, false, fmt.Errorf("arm64 MOVBU unsupported src: %q", ins.Raw)
+			return true, false, c.storeFPResult64(dst.FPOffset, "%"+z)
 		}
-		if err != nil {
-			return true, false, err
-		}
-		return true, false, c.storeReg(ins.Args[1].Reg, v)
+		return true, false, fmt.Errorf("arm64 MOVBU unsupported operands: %q", ins.Raw)
 
 	case "LDP":
-		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
-			return true, false, fmt.Errorf("arm64 LDP expects mem, (reg,reg): %q", ins.Raw)
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
+			return true, false, fmt.Errorf("arm64 LDP expects src, (reg,reg): %q", ins.Raw)
 		}
-		mem := ins.Args[0].Mem
-		addr, base, inc, err := c.addrI64(mem, postInc)
-		if err != nil {
-			return true, false, err
+		var v0, v1 string
+		if ins.Args[0].Kind == OpMem {
+			mem := ins.Args[0].Mem
+			addr, base, inc, err := c.addrI64(mem, postInc)
+			if err != nil {
+				return true, false, err
+			}
+			p0t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p0t, addr)
+			v0t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", v0t, p0t)
+			v0 = "%" + v0t
+			addr2t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i64 %s, 8\n", addr2t, addr)
+			p1t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", p1t, addr2t)
+			v1t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", v1t, p1t)
+			v1 = "%" + v1t
+			if err := c.storeReg(ins.Args[1].RegList[0], v0); err != nil {
+				return true, false, err
+			}
+			if err := c.storeReg(ins.Args[1].RegList[1], v1); err != nil {
+				return true, false, err
+			}
+			if err := c.updatePostInc(base, inc); err != nil {
+				return true, false, err
+			}
+			return true, false, nil
 		}
-		p0t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p0t, addr)
-		v0t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", v0t, p0t)
-		addr2t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = add i64 %s, 8\n", addr2t, addr)
-		p1t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", p1t, addr2t)
-		v1t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", v1t, p1t)
-		if err := c.storeReg(ins.Args[1].RegList[0], "%"+v0t); err != nil {
-			return true, false, err
+		if ins.Args[0].Kind == OpFP {
+			val, err := c.eval64(ins.Args[0], false)
+			if err != nil {
+				return true, false, err
+			}
+			if err := c.storeReg(ins.Args[1].RegList[0], val); err != nil {
+				return true, false, err
+			}
+			if err := c.storeReg(ins.Args[1].RegList[1], "0"); err != nil {
+				return true, false, err
+			}
+			return true, false, nil
 		}
-		if err := c.storeReg(ins.Args[1].RegList[1], "%"+v1t); err != nil {
-			return true, false, err
+		if ins.Args[0].Kind == OpSym {
+			p, err := c.ptrFromSB(ins.Args[0].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			v0t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", v0t, p)
+			p1 := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = getelementptr i8, ptr %s, i64 8\n", p1, p)
+			v1t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %%%s\n", v1t, p1)
+			if err := c.storeReg(ins.Args[1].RegList[0], "%"+v0t); err != nil {
+				return true, false, err
+			}
+			if err := c.storeReg(ins.Args[1].RegList[1], "%"+v1t); err != nil {
+				return true, false, err
+			}
+			return true, false, nil
 		}
-		if err := c.updatePostInc(base, inc); err != nil {
-			return true, false, err
-		}
-		return true, false, nil
+		return true, false, fmt.Errorf("arm64 LDP unsupported src: %q", ins.Raw)
 
 	case "LDPW":
 		if len(ins.Args) != 2 || ins.Args[0].Kind != OpMem || ins.Args[1].Kind != OpRegList || len(ins.Args[1].RegList) != 2 {
@@ -262,6 +391,37 @@ func (c *arm64Ctx) lowerData(op Op, postInc bool, ins Instr) (ok bool, terminate
 		p1t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", p1t, addr2t)
 		fmt.Fprintf(c.b, "  store i32 %%%s, ptr %%%s\n", t1, p1t)
+		if err := c.updatePostInc(base, inc); err != nil {
+			return true, false, err
+		}
+		return true, false, nil
+
+	case "STP":
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpRegList || len(ins.Args[0].RegList) != 2 || ins.Args[1].Kind != OpMem {
+			return true, false, fmt.Errorf("arm64 STP expects (reg,reg), mem: %q", ins.Raw)
+		}
+		mem := ins.Args[1].Mem
+		addr, base, inc, err := c.addrI64(mem, postInc)
+		if err != nil {
+			return true, false, err
+		}
+		v0, err := c.loadReg(ins.Args[0].RegList[0])
+		if err != nil {
+			return true, false, err
+		}
+		p0t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", p0t, addr)
+		fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v0, p0t)
+
+		addr2t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i64 %s, 8\n", addr2t, addr)
+		v1, err := c.loadReg(ins.Args[0].RegList[1])
+		if err != nil {
+			return true, false, err
+		}
+		p1t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %%%s to ptr\n", p1t, addr2t)
+		fmt.Fprintf(c.b, "  store i64 %s, ptr %%%s\n", v1, p1t)
 		if err := c.updatePostInc(base, inc); err != nil {
 			return true, false, err
 		}

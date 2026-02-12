@@ -137,9 +137,13 @@ func (c *arm64Ctx) condValue(cond string) (string, error) {
 		return z, nil
 	case "NE":
 		return not(z), nil
+	case "CS":
+		return carry, nil
 	case "HS":
 		return carry, nil
 	case "LO":
+		return not(carry), nil
+	case "CC":
 		return not(carry), nil
 	case "HI":
 		return and(carry, not(z)), nil

@@ -41,6 +41,22 @@ const (
 func parseReg(s string) (Reg, bool) {
 	ss := strings.ToUpper(strings.TrimSpace(s))
 	switch ss {
+	case "RAX":
+		return AX, true
+	case "RBX":
+		return BX, true
+	case "RCX":
+		return CX, true
+	case "RDX":
+		return DX, true
+	case "RSI":
+		return SI, true
+	case "RDI":
+		return DI, true
+	case "RSP", "ESP":
+		return SP, true
+	case "RBP", "EBP":
+		return BP, true
 	case "AX":
 		return AX, true
 	case "BX":
@@ -69,11 +85,24 @@ func parseReg(s string) (Reg, bool) {
 		return DL, true
 	case "ZR":
 		return ZR, true
+	case "G":
+		// Go arm64 asm pseudo register alias.
+		return Reg("R28"), true
+	case "LR":
+		return Reg("R30"), true
+	case "R18_PLATFORM":
+		return Reg("R18"), true
 	}
 	if strings.HasPrefix(ss, "R") && len(ss) >= 2 {
 		// AArch64 general purpose registers: R0..R31, and x86-64 integer registers R8..R15.
 		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 31 {
 			return Reg(ss), true
+		}
+	}
+	if strings.HasPrefix(ss, "W") && len(ss) >= 2 {
+		// AArch64 32-bit aliases W0..W31 share the underlying X registers.
+		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 31 {
+			return Reg(fmt.Sprintf("R%d", n)), true
 		}
 	}
 	// SIMD/FP registers:
@@ -699,7 +728,22 @@ func parseMem(s string) (MemRef, bool) {
 	if !strings.HasPrefix(rest, "(") {
 		return MemRef{}, false
 	}
-	j := strings.IndexByte(rest, ')')
+	depth := 0
+	j := -1
+	for k := 0; k < len(rest); k++ {
+		switch rest[k] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				j = k
+			}
+		}
+		if j >= 0 {
+			break
+		}
+	}
 	if j < 0 {
 		return MemRef{}, false
 	}
@@ -708,15 +752,47 @@ func parseMem(s string) (MemRef, bool) {
 
 	var off int64
 	if offPart != "" {
-		n, err := strconv.ParseInt(offPart, 0, 64)
-		if err != nil {
-			return MemRef{}, false
+		if n, err := strconv.ParseInt(offPart, 0, 64); err == nil {
+			off = n
+		} else if u, ok := parseImmExpr(offPart); ok {
+			off = int64(u)
+		} else {
+			// Keep parsing permissive for macro-style symbolic offsets such as
+			// g_m(R14) when include-driven constants are not expanded.
+			off = 0
 		}
-		off = n
 	}
 
 	base, ok := parseReg(baseStr)
 	if !ok {
+		// Newer/legacy Plan 9 forms may encode displacement expression in the
+		// first parens and then provide base/index groups, e.g.:
+		//   (0*8)(R8)(BX*8)
+		if offPart == "" && strings.HasPrefix(rest, "(") {
+			j2 := strings.IndexByte(rest, ')')
+			if j2 > 1 {
+				base2 := strings.TrimSpace(rest[1:j2])
+				if br, ok := parseReg(base2); ok {
+					mem := MemRef{Base: br, Off: 0}
+					if u, ok := parseImmExpr(baseStr); ok {
+						mem.Off = int64(u)
+					}
+					rem := strings.TrimSpace(rest[j2+1:])
+					if rem == "" {
+						return mem, true
+					}
+					if strings.HasPrefix(rem, "(") && strings.HasSuffix(rem, ")") {
+						inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rem, "("), ")"))
+						idx, scale, ok := parseIndexScale(inner)
+						if ok {
+							mem.Index = idx
+							mem.Scale = scale
+							return mem, true
+						}
+					}
+				}
+			}
+		}
 		// Legacy Go amd64 asm syntax in older stdlib releases uses
 		// "(N*4)(REG)" for word-indexed offsets.
 		if offPart == "" && strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
@@ -725,6 +801,9 @@ func parseMem(s string) (MemRef, bool) {
 				if u, ok := parseImmExpr(baseStr); ok {
 					return MemRef{Base: br, Off: int64(u)}, true
 				}
+				// Accept (symExpr)(REG) by degrading symExpr to offset 0 when
+				// include-derived constants are unavailable in preprocessing.
+				return MemRef{Base: br, Off: 0}, true
 			}
 		}
 		// Accept off(index*scale) with no base, e.g. -1(AX*2).
