@@ -19,6 +19,7 @@ func emitAMD64Prelude(b *strings.Builder) {
 	b.WriteString("declare i64 @llvm.ctpop.i64(i64)\n")
 	b.WriteString("declare i32 @llvm.ctpop.i32(i32)\n")
 	b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
+	b.WriteString("declare i32 @llvm.bswap.i32(i32)\n")
 	b.WriteString("declare double @llvm.sqrt.f64(double)\n")
 	b.WriteString("declare double @llvm.rint.f64(double)\n")
 	b.WriteString("declare <16 x i8> @llvm.x86.ssse3.pshuf.b.128(<16 x i8>, <16 x i8>)\n")

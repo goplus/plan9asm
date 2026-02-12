@@ -590,6 +590,15 @@ func (c *amd64Ctx) markFPResultAddrTaken(off int64) {
 	}
 }
 
+func (c *amd64Ctx) markFPResultWritten(off int64) {
+	for _, r := range c.fpResults {
+		if r.Offset == off {
+			c.fpResWritten[r.Index] = true
+			return
+		}
+	}
+}
+
 func (c *amd64Ctx) evalFPToI64(off int64) (string, error) {
 	slot, ok := c.fpParam(off)
 	if !ok {
@@ -716,12 +725,7 @@ func (c *amd64Ctx) storeFPResult(off int64, ty LLVMType, v string) error {
 					cast = "%" + t
 				}
 				fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", slotTy, cast, alloca)
-				for _, r := range c.fpResults {
-					if r.Offset == off {
-						c.fpResWritten[r.Index] = true
-						break
-					}
-				}
+				c.markFPResultWritten(off)
 				return nil
 			}
 		}
@@ -731,56 +735,31 @@ func (c *amd64Ctx) storeFPResult(off int64, ty LLVMType, v string) error {
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
 			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == I64 && slotTy == LLVMType("double"):
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast i64 %s to double\n", t, v)
 			fmt.Fprintf(c.b, "  store double %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == LLVMType("double") && slotTy == I64:
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = bitcast double %s to i64\n", t, v)
 			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == I64 && slotTy == Ptr:
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, v)
 			fmt.Fprintf(c.b, "  store ptr %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == Ptr && slotTy == I64:
 			t := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, v)
 			fmt.Fprintf(c.b, "  store i64 %%%s, ptr %s\n", t, alloca)
-			for _, r := range c.fpResults {
-				if r.Offset == off {
-					c.fpResWritten[r.Index] = true
-					break
-				}
-			}
+			c.markFPResultWritten(off)
 			return nil
 		case ty == I64 && slotTy == I64:
 			// ok
@@ -789,12 +768,7 @@ func (c *amd64Ctx) storeFPResult(off int64, ty LLVMType, v string) error {
 		}
 	}
 	fmt.Fprintf(c.b, "  store %s %s, ptr %s\n", ty, v, alloca)
-	for _, r := range c.fpResults {
-		if r.Offset == off {
-			c.fpResWritten[r.Index] = true
-			break
-		}
-	}
+	c.markFPResultWritten(off)
 	return nil
 }
 
