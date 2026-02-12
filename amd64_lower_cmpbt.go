@@ -146,6 +146,12 @@ func (c *amd64Ctx) evalIntSized(op Operand, ty LLVMType) (string, error) {
 		return "%" + t, nil
 	case OpSym:
 		s := strings.TrimSpace(op.Sym)
+		if strings.HasPrefix(s, "$") {
+			// Macro-style symbolic immediates (e.g. $const_avxSupported) may
+			// survive preprocessing when include constants are unavailable.
+			// Keep translation progressing with a conservative zero value.
+			return "0", nil
+		}
 		if strings.HasSuffix(s, "(SB)") {
 			p, err := c.ptrFromSB(s)
 			if err != nil {

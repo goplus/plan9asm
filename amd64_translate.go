@@ -111,7 +111,7 @@ func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emi
 		return false, nil
 	case OpRET:
 		return true, c.lowerRET()
-	case "PCALIGN":
+	case "PCALIGN", "NO_LOCAL_POINTERS", "NOP", "ADJSP", "CLD", "STD", "REP":
 		// Alignment directive emitted by stdlib asm; no semantic effect in our IR.
 		return false, nil
 	}

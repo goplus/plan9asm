@@ -233,54 +233,63 @@ func preprocess(src string) (string, error) {
 	sort.Slice(macroNames, func(i, j int) bool { return len(macroNames[i]) > len(macroNames[j]) })
 	var out strings.Builder
 	for _, line := range lines {
-		trimLine := strings.TrimSpace(line)
-
-		expanded := false
-		for _, name := range macroNames {
-			m := macros[name]
-			if len(m.params) == 0 {
-				continue
-			}
-			args, ok := parseMacroCall(trimLine, name, len(m.params))
-			if !ok {
-				continue
-			}
-			out.WriteString(replaceMacroParams(m.body, m.params, args))
+		for _, ex := range expandPPLine(line, macros, macroNames, 0) {
+			out.WriteString(ex)
 			out.WriteString("\n")
-			expanded = true
-			break
 		}
-		if expanded {
-			continue
-		}
-
-		if m, ok := macros[trimLine]; ok && len(m.params) == 0 {
-			out.WriteString(m.body)
-			out.WriteString("\n")
-			continue
-		}
-		// Expand immediate macro refs in-place: $NAME -> $<body>.
-		// This is required by stdlib asm like:
-		//   FMOVD $Ln2Hi, F4
-		// where constants are defined by #define.
-		for _, name := range macroNames {
-			m := macros[name]
-			if len(m.params) != 0 {
-				continue
-			}
-			body := strings.TrimSpace(m.body)
-			if body == "" {
-				continue
-			}
-			line = strings.ReplaceAll(line, "$"+name, "$"+body)
-		}
-		// Expand identifiers inside immediate expressions:
-		//   $(Big - 1) -> $(0x433... - 1)
-		line = expandImmExprMacros(line, macros)
-		out.WriteString(line)
-		out.WriteString("\n")
 	}
 	return out.String(), nil
+}
+
+func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, depth int) []string {
+	if depth >= 16 {
+		return []string{line}
+	}
+	trimLine := strings.TrimSpace(line)
+	if trimLine == "" {
+		return []string{""}
+	}
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) == 0 {
+			continue
+		}
+		args, ok := parseMacroCall(trimLine, name, len(m.params))
+		if !ok {
+			continue
+		}
+		body := replaceMacroParams(m.body, m.params, args)
+		chunks := strings.Split(body, "\n")
+		out := make([]string, 0, len(chunks))
+		for _, ch := range chunks {
+			out = append(out, expandPPLine(strings.TrimSpace(ch), macros, macroNames, depth+1)...)
+		}
+		return out
+	}
+	if m, ok := macros[trimLine]; ok && len(m.params) == 0 {
+		chunks := strings.Split(m.body, "\n")
+		out := make([]string, 0, len(chunks))
+		for _, ch := range chunks {
+			out = append(out, expandPPLine(strings.TrimSpace(ch), macros, macroNames, depth+1)...)
+		}
+		return out
+	}
+	// Expand immediate macro refs in-place: $NAME -> $<body>.
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) != 0 {
+			continue
+		}
+		body := strings.TrimSpace(m.body)
+		if body == "" {
+			continue
+		}
+		line = strings.ReplaceAll(line, "$"+name, "$"+body)
+	}
+	// Expand identifiers inside immediate expressions:
+	//   $(Big - 1) -> $(0x433... - 1)
+	line = expandImmExprMacros(line, macros)
+	return []string{line}
 }
 
 func expandImmExprMacros(line string, macros map[string]ppMacro) string {

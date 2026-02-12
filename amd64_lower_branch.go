@@ -33,6 +33,32 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 				return true, false, err
 			}
 			return true, false, nil
+		case OpMem:
+			// Go asm commonly writes indirect call via register as CALL (DX).
+			// Treat plain (REG) as indirect-through-register target.
+			mem := ins.Args[0].Mem
+			if mem.Base == "" || mem.Index != "" || mem.Scale != 0 || mem.Off != 0 {
+				return true, false, fmt.Errorf("amd64 CALL unsupported mem target: %q", ins.Raw)
+			}
+			addr, err := c.loadReg(mem.Base)
+			if err != nil {
+				return true, false, err
+			}
+			fptr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", fptr, addr)
+			di, _ := c.loadReg(DI)
+			si, _ := c.loadReg(SI)
+			dx, _ := c.loadReg(DX)
+			cx, _ := c.loadReg(CX)
+			r8, _ := c.loadReg(Reg("R8"))
+			r9, _ := c.loadReg(Reg("R9"))
+			ret := c.newTmp()
+			// Model as a generic C-ABI style call carrying register arguments.
+			fmt.Fprintf(c.b, "  %%%s = call i64 %%%s(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n", ret, fptr, di, si, dx, cx, r8, r9)
+			if err := c.storeReg(AX, "%"+ret); err != nil {
+				return true, false, err
+			}
+			return true, false, nil
 		case OpSym:
 			if err := c.callSym(ins.Args[0]); err != nil {
 				return true, false, err
@@ -45,7 +71,7 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	case "JMP",
 		"JE", "JEQ", "JZ", "JNE", "JNZ",
 		"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-		"JA", "JAE", "JB", "JBE", "JLS",
+		"JA", "JHI", "JAE", "JHS", "JB", "JLO", "JBE", "JLS",
 		"JC", "JNC", "JCC":
 		// ok
 	default:
@@ -60,6 +86,10 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 	switch ins.Args[0].Kind {
 	case OpIdent:
 		target = ins.Args[0].Ident
+	case OpReg:
+		// Branch labels like V1 may be tokenized as registers by the generic
+		// parser; interpret as local labels for branch targets.
+		target = string(ins.Args[0].Reg)
 	case OpSym:
 		s := strings.TrimSpace(ins.Args[0].Sym)
 		// Treat JMP foo(SB) as a tailcall to another TEXT (common in stdlib asm).
@@ -139,16 +169,14 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		t2 := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
 		cond = "%" + t2
-	case "JB":
-		cond = c.loadFlag(c.flagsCFSlot)
-	case "JC":
+	case "JB", "JLO", "JC":
 		cond = c.loadFlag(c.flagsCFSlot)
 	case "JNC", "JCC":
 		cf := c.loadFlag(c.flagsCFSlot)
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
 		cond = "%" + t
-	case "JAE":
+	case "JAE", "JHS":
 		cf := c.loadFlag(c.flagsCFSlot)
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, cf)
@@ -159,7 +187,7 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = or i1 %s, %s\n", t, cf, z)
 		cond = "%" + t
-	case "JA":
+	case "JA", "JHI":
 		cf := c.loadFlag(c.flagsCFSlot)
 		z := c.loadFlag(c.flagsZSlot)
 		t1 := c.newTmp()

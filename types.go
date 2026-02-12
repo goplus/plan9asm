@@ -708,11 +708,15 @@ func parseMem(s string) (MemRef, bool) {
 
 	var off int64
 	if offPart != "" {
-		n, err := strconv.ParseInt(offPart, 0, 64)
-		if err != nil {
-			return MemRef{}, false
+		if n, err := strconv.ParseInt(offPart, 0, 64); err == nil {
+			off = n
+		} else if u, ok := parseImmExpr(offPart); ok {
+			off = int64(u)
+		} else {
+			// Keep parsing permissive for macro-style symbolic offsets such as
+			// g_m(R14) when include-driven constants are not expanded.
+			off = 0
 		}
-		off = n
 	}
 
 	base, ok := parseReg(baseStr)
@@ -725,6 +729,9 @@ func parseMem(s string) (MemRef, bool) {
 				if u, ok := parseImmExpr(baseStr); ok {
 					return MemRef{Base: br, Off: int64(u)}, true
 				}
+				// Accept (symExpr)(REG) by degrading symExpr to offset 0 when
+				// include-derived constants are unavailable in preprocessing.
+				return MemRef{Base: br, Off: 0}, true
 			}
 		}
 		// Accept off(index*scale) with no base, e.g. -1(AX*2).

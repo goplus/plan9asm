@@ -7,9 +7,9 @@ import (
 
 func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVOU", "MOVOA", "MOVQ", "MOVL", "MOVD",
-		"VMOVDQU", "VPCMPEQB", "VPMOVMSKB", "VZEROUPPER", "VPBROADCASTB", "VPAND", "VPTEST",
-		"PXOR", "PAND", "PCLMULQDQ", "PCMPEQB", "PMOVMSKB", "PSRLDQ", "PSRLQ", "PEXTRD",
+	case "MOVOU", "MOVOA", "MOVUPS", "MOVAPS", "MOVO", "MOVQ", "MOVL", "MOVD",
+		"VMOVDQU", "VPCMPEQB", "VPMOVMSKB", "VZEROUPPER", "VPBROADCASTB", "VPAND", "VPXOR", "VPTEST",
+		"PXOR", "PAND", "PADDD", "PCLMULQDQ", "PCMPEQB", "PMOVMSKB", "PSRLDQ", "PSRLQ", "PEXTRD",
 		"PUNPCKLBW", "PSHUFL", "PCMPESTRI":
 		// ok
 	default:
@@ -60,6 +60,11 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	if op == "VZEROUPPER" {
 		// No-op in LLVM IR. Kept for completeness.
 		return true, false, nil
+	}
+
+	// MOVUPS/MOVAPS/MOVO are aliases for unaligned/aligned 128-bit xmm moves.
+	if op == "MOVUPS" || op == "MOVAPS" || op == "MOVO" {
+		op = "MOVOU"
 	}
 
 	// MOVQ src, Xn (load low 64 bits into Xn)
@@ -399,24 +404,64 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		return true, false, c.storeX(ins.Args[2].Reg, "%"+bc2)
 
 	case "VMOVDQU":
-		// VMOVDQU srcMem, Ydst (load 32 bytes)
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 VMOVDQU expects src, Ydst: %q", ins.Raw)
+		// VMOVDQU load/store for Y regs.
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 VMOVDQU expects src, dst: %q", ins.Raw)
 		}
-		if _, ok := amd64ParseYReg(ins.Args[1].Reg); !ok {
+		if ins.Args[1].Kind == OpReg {
+			if _, ok := amd64ParseYReg(ins.Args[1].Reg); !ok {
+				return false, false, nil
+			}
+			var p string
+			switch ins.Args[0].Kind {
+			case OpMem:
+				addr, err := c.addrFromMem(ins.Args[0].Mem)
+				if err != nil {
+					return true, false, err
+				}
+				p = c.ptrFromAddrI64(addr)
+			case OpSym:
+				ps, err := c.ptrFromSB(ins.Args[0].Sym)
+				if err != nil {
+					return true, false, err
+				}
+				p = ps
+			default:
+				return true, false, fmt.Errorf("amd64 VMOVDQU unsupported src: %q", ins.Raw)
+			}
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load <32 x i8>, ptr %s, align 1\n", ld, p)
+			return true, false, c.storeY(ins.Args[1].Reg, "%"+ld)
+		}
+		if ins.Args[0].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VMOVDQU expects Ysrc for store form: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseYReg(ins.Args[0].Reg); !ok {
 			return false, false, nil
 		}
-		if ins.Args[0].Kind != OpMem {
-			return true, false, fmt.Errorf("amd64 VMOVDQU unsupported src: %q", ins.Raw)
-		}
-		addr, err := c.addrFromMem(ins.Args[0].Mem)
+		src, err := c.loadY(ins.Args[0].Reg)
 		if err != nil {
 			return true, false, err
 		}
-		p := c.ptrFromAddrI64(addr)
-		ld := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = load <32 x i8>, ptr %s, align 1\n", ld, p)
-		return true, false, c.storeY(ins.Args[1].Reg, "%"+ld)
+		switch ins.Args[1].Kind {
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[1].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			fmt.Fprintf(c.b, "  store <32 x i8> %s, ptr %s, align 1\n", src, p)
+			return true, false, nil
+		case OpSym:
+			p, err := c.ptrFromSB(ins.Args[1].Sym)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store <32 x i8> %s, ptr %s, align 1\n", src, p)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 VMOVDQU unsupported dst: %q", ins.Raw)
+		}
 
 	case "VPCMPEQB":
 		// VPCMPEQB Ysrc1, Ysrc2, Ydst
@@ -479,41 +524,71 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		return true, false, c.storeReg(ins.Args[1].Reg, "%"+z)
 
 	case "MOVOU", "MOVOA":
-		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects src, Xdst: %q", op, ins.Raw)
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
 		}
-		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
+		if ins.Args[1].Kind == OpReg {
+			if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
+				return false, false, nil
+			}
+			dst := ins.Args[1].Reg
+			switch ins.Args[0].Kind {
+			case OpReg:
+				v, err := c.loadX(ins.Args[0].Reg)
+				if err != nil {
+					return true, false, err
+				}
+				return true, false, c.storeX(dst, v)
+			case OpMem:
+				addr, err := c.addrFromMem(ins.Args[0].Mem)
+				if err != nil {
+					return true, false, err
+				}
+				p := c.ptrFromAddrI64(addr)
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
+				return true, false, c.storeX(dst, "%"+ld)
+			case OpSym:
+				p, err := c.ptrFromSB(ins.Args[0].Sym)
+				if err != nil {
+					return true, false, err
+				}
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
+				return true, false, c.storeX(dst, "%"+ld)
+			default:
+				return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
+			}
+		}
+
+		if ins.Args[0].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects Xsrc for store form: %q", op, ins.Raw)
+		}
+		if _, ok := amd64ParseXReg(ins.Args[0].Reg); !ok {
 			return false, false, nil
 		}
-		dst := ins.Args[1].Reg
-
-		// src can be mem, sym, or X reg.
-		switch ins.Args[0].Kind {
-		case OpReg:
-			v, err := c.loadX(ins.Args[0].Reg)
-			if err != nil {
-				return true, false, err
-			}
-			return true, false, c.storeX(dst, v)
+		srcv, err := c.loadX(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		switch ins.Args[1].Kind {
 		case OpMem:
-			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			addr, err := c.addrFromMem(ins.Args[1].Mem)
 			if err != nil {
 				return true, false, err
 			}
 			p := c.ptrFromAddrI64(addr)
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
-			return true, false, c.storeX(dst, "%"+ld)
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", srcv, p)
+			return true, false, nil
 		case OpSym:
-			p, err := c.ptrFromSB(ins.Args[0].Sym)
+			p, err := c.ptrFromSB(ins.Args[1].Sym)
 			if err != nil {
 				return true, false, err
 			}
-			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load <16 x i8>, ptr %s, align 1\n", ld, p)
-			return true, false, c.storeX(dst, "%"+ld)
+			fmt.Fprintf(c.b, "  store <16 x i8> %s, ptr %s, align 1\n", srcv, p)
+			return true, false, nil
 		default:
-			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
+			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 		}
 
 	case "PXOR", "PAND":

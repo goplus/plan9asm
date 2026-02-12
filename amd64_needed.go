@@ -11,7 +11,9 @@ func funcNeedsAMD64CFG(fn Func) bool {
 		}
 		op := strings.ToUpper(string(ins.Op))
 		switch Op(op) {
-		case "JMP", "JL", "JLE", "JG", "JGT", "JGE", "JB", "JBE", "JA", "JAE", "JZ", "JNZ", "JNC", "JC":
+		case "JMP", "JL", "JLT", "JLE", "JG", "JGT", "JGE",
+			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS",
+			"JZ", "JE", "JEQ", "JNZ", "JNE", "JNC", "JC", "JCC", "JLS":
 			return true
 		}
 		// A handful of amd64 stdlib asm functions are straight-line, but if we
