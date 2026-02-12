@@ -29,9 +29,6 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 	if opt.AnnotateSource {
 		return llvm.Module{}, directUnsupportedf("source annotation requires textual lowering")
 	}
-	if len(file.Data) != 0 || len(file.Globl) != 0 {
-		return llvm.Module{}, directUnsupportedf("DATA/GLOBL lowering not migrated yet")
-	}
 
 	resolve := opt.ResolveSym
 	if resolve == nil {
@@ -42,6 +39,13 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 	mod := ctx.NewModule("plan9asm")
 	if opt.TargetTriple != "" {
 		mod.SetTarget(opt.TargetTriple)
+	}
+	if err := emitDataGlobalsModule(mod, file, resolve); err != nil {
+		mod.Dispose()
+		if errors.Is(err, errDirectModuleUnsupported) {
+			return llvm.Module{}, err
+		}
+		return llvm.Module{}, err
 	}
 
 	for i := range file.Funcs {
@@ -62,10 +66,6 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 		if sig.Ret == "" {
 			mod.Dispose()
 			return llvm.Module{}, fmt.Errorf("missing return type for %q", name)
-		}
-		if sig.Attrs != "" {
-			mod.Dispose()
-			return llvm.Module{}, directUnsupportedf("function attrs groups are not migrated yet (%s)", name)
 		}
 		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
 			mod.Dispose()
@@ -511,6 +511,85 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 	}
 	if !terminated {
 		return directUnsupportedf("function %s has no RET", sig.Name)
+	}
+	return nil
+}
+
+func emitDataGlobalsModule(mod llvm.Module, file *File, resolve func(string) string) error {
+	type symData struct {
+		size  int64
+		bytes map[int64][]byte
+	}
+	syms := map[string]*symData{}
+	resolveData := func(sym string) string {
+		if strings.Contains(sym, "·") || strings.Contains(sym, "/") || strings.Contains(sym, ".") {
+			return resolve(sym)
+		}
+		return resolve("·" + sym)
+	}
+	for _, g := range file.Globl {
+		name := resolveData(g.Sym)
+		sd := syms[name]
+		if sd == nil {
+			sd = &symData{bytes: map[int64][]byte{}}
+			syms[name] = sd
+		}
+		if g.Size > sd.size {
+			sd.size = g.Size
+		}
+	}
+	for _, d := range file.Data {
+		name := resolveData(d.Sym)
+		sd := syms[name]
+		if sd == nil {
+			sd = &symData{bytes: map[int64][]byte{}}
+			syms[name] = sd
+		}
+		if d.Width <= 0 {
+			return fmt.Errorf("DATA %s: invalid width %d", d.Sym, d.Width)
+		}
+		payload := make([]byte, d.Width)
+		v := d.Value
+		for i := int64(0); i < d.Width; i++ {
+			payload[i] = byte(v & 0xff)
+			v >>= 8
+		}
+		sd.bytes[d.Off] = payload
+		if end := d.Off + d.Width; end > sd.size {
+			sd.size = end
+		}
+	}
+	if len(syms) == 0 {
+		return nil
+	}
+
+	ctx := mod.Context()
+	i8Ty := ctx.Int8Type()
+
+	for name, sd := range syms {
+		if sd.size <= 0 {
+			continue
+		}
+		if sd.size > (1 << 31) {
+			return directUnsupportedf("global %s too large for direct lowering: %d", name, sd.size)
+		}
+		buf := make([]byte, sd.size)
+		for off, p := range sd.bytes {
+			if off < 0 || off+int64(len(p)) > int64(len(buf)) {
+				return fmt.Errorf("DATA %s: out of bounds off=%d len=%d size=%d", name, off, len(p), len(buf))
+			}
+			copy(buf[off:], p)
+		}
+		arrTy := llvm.ArrayType(i8Ty, len(buf))
+		elems := make([]llvm.Value, len(buf))
+		for i, b := range buf {
+			elems[i] = llvm.ConstInt(i8Ty, uint64(b), false)
+		}
+		init := llvm.ConstArray(i8Ty, elems)
+		g := llvm.AddGlobal(mod, arrTy, name)
+		g.SetInitializer(init)
+		g.SetGlobalConstant(true)
+		g.SetAlignment(int(bestAlign(int64(len(buf)))))
 	}
 	return nil
 }
