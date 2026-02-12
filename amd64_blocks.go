@@ -18,7 +18,8 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 	isPCRelTarget := func(ins Instr) (off int64, ok bool) {
 		op := strings.ToUpper(string(ins.Op))
 		switch Op(op) {
-		case "JE", "JEQ", "JZ", "JNE", "JNZ",
+		case "JMP",
+			"JE", "JEQ", "JZ", "JNE", "JNZ",
 			"JL", "JLT", "JLE", "JG", "JGT", "JGE",
 			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS",
 			"JNC", "JC", "JCC":

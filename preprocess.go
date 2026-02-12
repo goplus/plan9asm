@@ -274,6 +274,23 @@ func expandPPLine(line string, macros map[string]ppMacro, macroNames []string, d
 		}
 		return out
 	}
+	// Expand function-like macro calls that appear inline within a statement,
+	// e.g. "...; ROL16(X12, X15); ...".
+	inlineChanged := false
+	for _, name := range macroNames {
+		m := macros[name]
+		if len(m.params) == 0 {
+			continue
+		}
+		nl, changed := expandInlineMacroCalls(line, name, m)
+		if changed {
+			line = nl
+			inlineChanged = true
+		}
+	}
+	if inlineChanged {
+		return expandPPLine(line, macros, macroNames, depth+1)
+	}
 	// Expand immediate macro refs in-place: $NAME -> $<body>.
 	for _, name := range macroNames {
 		m := macros[name]
@@ -448,6 +465,73 @@ closeFound:
 		args = append(args, strings.TrimSpace(p))
 	}
 	return args, true
+}
+
+func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
+	if len(m.params) == 0 || line == "" {
+		return line, false
+	}
+	var out strings.Builder
+	changed := false
+	i := 0
+	for i < len(line) {
+		j := strings.Index(line[i:], name+"(")
+		if j < 0 {
+			out.WriteString(line[i:])
+			break
+		}
+		j += i
+		// Identifier boundary check on the left side.
+		if j > 0 && isIdentPart(line[j-1]) {
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		open := j + len(name)
+		if open >= len(line) || line[open] != '(' {
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		depth := 0
+		k := open
+		for ; k < len(line); k++ {
+			switch line[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					goto callFound
+				}
+			}
+		}
+		// Unterminated call; keep tail as-is.
+		out.WriteString(line[i:])
+		return out.String(), changed
+
+	callFound:
+		argText := strings.TrimSpace(line[open+1 : k])
+		args := []string{}
+		if argText != "" {
+			parts := splitTopLevelCSV(argText)
+			args = make([]string, 0, len(parts))
+			for _, p := range parts {
+				args = append(args, strings.TrimSpace(p))
+			}
+		}
+		if len(args) != len(m.params) {
+			// Not this macro invocation; keep one byte and continue scanning.
+			out.WriteString(line[i : j+1])
+			i = j + 1
+			continue
+		}
+		out.WriteString(line[i:j])
+		out.WriteString(replaceMacroParams(m.body, m.params, args))
+		changed = true
+		i = k + 1
+	}
+	return out.String(), changed
 }
 
 func replaceMacroParams(body string, params, args []string) string {

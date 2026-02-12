@@ -203,6 +203,17 @@ func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) st
 }
 
 func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) string) {
+	resolveSBBase := func(base string) string {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			return ""
+		}
+		if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
+			return resolve(base)
+		}
+		return resolve("·" + base)
+	}
+
 	// Collect base symbols of SB refs with numeric offsets. These are almost always
 	// global variables whose address is computed via GEP in the lowering.
 	need := map[string]bool{}
@@ -210,10 +221,13 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 
 	// Anything in DATA/GLOBL will be defined in this module.
 	for _, g := range file.Globl {
-		defined[resolve(g.Sym)] = true
+		defined[resolveSBBase(g.Sym)] = true
 	}
 	for _, d := range file.Data {
-		defined[resolve(d.Sym)] = true
+		defined[resolveSBBase(d.Sym)] = true
+	}
+	for _, fn := range file.Funcs {
+		defined[resolve(fn.Sym)] = true
 	}
 
 	for _, fn := range file.Funcs {
@@ -232,6 +246,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 				if base == "" {
 					continue
 				}
+				base = strings.TrimPrefix(base, "$")
 				if off == 0 {
 					// Bare symbol refs are usually global data addresses
 					// (e.g. MOVQ runtime·vdsoGettimeofdaySym(SB), AX). Exclude only
@@ -244,7 +259,7 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 						continue
 					}
 				}
-				name := resolve(base)
+				name := resolveSBBase(base)
 				if name != "" && !defined[name] {
 					need[name] = true
 				}
@@ -586,6 +601,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		return nil
 	}
 
+	terminated := false
 	for _, ins := range fn.Instrs {
 		if annotateSource {
 			emitIRSourceComment(b, ins.Raw)
@@ -856,12 +872,23 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				}
 				fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, v.val)
 			}
+			terminated = true
 
 		case OpBYTE:
 			// Ignore raw machine bytes for now (prototype).
 			continue
 		default:
 			return fmt.Errorf("unsupported instruction: %s", ins.Op)
+		}
+		if terminated {
+			break
+		}
+	}
+	if !terminated {
+		if sig.Ret == Void {
+			b.WriteString("  ret void\n")
+		} else {
+			fmt.Fprintf(b, "  ret %s %s\n", sig.Ret, llvmZeroValue(sig.Ret))
 		}
 	}
 

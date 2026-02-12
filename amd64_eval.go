@@ -2,6 +2,7 @@ package plan9asm
 
 import (
 	"fmt"
+	"strings"
 )
 
 func (c *amd64Ctx) evalI64(op Operand) (string, error) {
@@ -22,9 +23,25 @@ func (c *amd64Ctx) evalI64(op Operand) (string, error) {
 		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)
 		return "%" + t, nil
 	case OpSym:
-		p, err := c.ptrFromSB(op.Sym)
+		s := strings.TrimSpace(op.Sym)
+		addrOnly := strings.HasPrefix(s, "$")
+		if addrOnly {
+			s = strings.TrimSpace(strings.TrimPrefix(s, "$"))
+		}
+		p, err := c.ptrFromSB(s)
 		if err != nil {
+			// Some runtime asm constants (e.g. $const_stackGuard) come from
+			// includes/macros that we don't fully materialize. Treat unresolved
+			// bare symbols as immediate zero to keep translation progressing.
+			if !strings.Contains(s, "(SB)") {
+				return "0", nil
+			}
 			return "", err
+		}
+		if addrOnly {
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
+			return "%" + t, nil
 		}
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", t, p)

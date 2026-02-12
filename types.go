@@ -721,6 +721,34 @@ func parseMem(s string) (MemRef, bool) {
 
 	base, ok := parseReg(baseStr)
 	if !ok {
+		// Newer/legacy Plan 9 forms may encode displacement expression in the
+		// first parens and then provide base/index groups, e.g.:
+		//   (0*8)(R8)(BX*8)
+		if offPart == "" && strings.HasPrefix(rest, "(") {
+			j2 := strings.IndexByte(rest, ')')
+			if j2 > 1 {
+				base2 := strings.TrimSpace(rest[1:j2])
+				if br, ok := parseReg(base2); ok {
+					mem := MemRef{Base: br, Off: 0}
+					if u, ok := parseImmExpr(baseStr); ok {
+						mem.Off = int64(u)
+					}
+					rem := strings.TrimSpace(rest[j2+1:])
+					if rem == "" {
+						return mem, true
+					}
+					if strings.HasPrefix(rem, "(") && strings.HasSuffix(rem, ")") {
+						inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rem, "("), ")"))
+						idx, scale, ok := parseIndexScale(inner)
+						if ok {
+							mem.Index = idx
+							mem.Scale = scale
+							return mem, true
+						}
+					}
+				}
+			}
+		}
 		// Legacy Go amd64 asm syntax in older stdlib releases uses
 		// "(N*4)(REG)" for word-indexed offsets.
 		if offPart == "" && strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {

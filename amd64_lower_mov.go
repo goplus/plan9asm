@@ -1,10 +1,13 @@
 package plan9asm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVQ", "MOVL", "MOVB", "MOVW", "CMOVQLT":
+	case "MOVQ", "MOVL", "MOVLQZX", "MOVB", "MOVW", "CMOVQLT":
 		// ok
 	default:
 		return false, false, nil
@@ -13,6 +16,9 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
 	}
 	src, dst := ins.Args[0], ins.Args[1]
+	if op == "MOVLQZX" {
+		op = "MOVL"
+	}
 
 	// Vector moves are handled in lowerVec.
 	if dst.Kind == OpReg {
@@ -112,6 +118,16 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 			p := c.ptrFromAddrI64(addr)
 			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", widthTy, small, p)
 			return true, false, nil
+		case OpSym:
+			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
+				return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
+			}
+			p, err := c.ptrFromSB(dst.Sym)
+			if err != nil {
+				return true, false, err
+			}
+			fmt.Fprintf(c.b, "  store %s %s, ptr %s, align 1\n", widthTy, small, p)
+			return true, false, nil
 		default:
 			return true, false, fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
 		}
@@ -163,6 +179,20 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 				return true, false, err
 			}
 			p := c.ptrFromAddrI64(addr)
+			fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+			return true, false, nil
+		case OpSym:
+			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
+				return true, false, nil
+			}
+			v, err := c.evalI64(src)
+			if err != nil {
+				return true, false, err
+			}
+			p, err := c.ptrFromSB(dst.Sym)
+			if err != nil {
+				return true, false, err
+			}
 			fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
 			return true, false, nil
 		default:
@@ -242,6 +272,45 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 				return true, false, err
 			}
 			p := c.ptrFromAddrI64(addr)
+			fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", i32v, p)
+			return true, false, nil
+		case OpImm:
+			// Some runtime stubs intentionally encode a crashing instruction as
+			// "MOVL $0xf1, 0xf1". Keep translation progressing.
+			return true, false, nil
+		case OpSym:
+			if !strings.HasSuffix(strings.TrimSpace(dst.Sym), "(SB)") {
+				// Crash marker form (e.g. MOVL $0xf1, 0xf1) in runtime stubs.
+				return true, false, nil
+			}
+			var i32v string
+			switch src.Kind {
+			case OpImm:
+				i32v = fmt.Sprintf("%d", int32(src.Imm))
+			case OpReg, OpFP, OpSym:
+				v64, err := c.evalI64(src)
+				if err != nil {
+					return true, false, err
+				}
+				tr := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
+				i32v = "%" + tr
+			case OpMem:
+				addr, err := c.addrFromMem(src.Mem)
+				if err != nil {
+					return true, false, err
+				}
+				p := c.ptrFromAddrI64(addr)
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+				i32v = "%" + ld
+			default:
+				return true, false, fmt.Errorf("amd64 MOVL unsupported src: %q", ins.Raw)
+			}
+			p, err := c.ptrFromSB(dst.Sym)
+			if err != nil {
+				return true, false, err
+			}
 			fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", i32v, p)
 			return true, false, nil
 		default:

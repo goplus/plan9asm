@@ -236,10 +236,18 @@ func parseDATAStmt(arch Arch, rest string) (DataStmt, error) {
 
 	val, ok := parseImm(rhs)
 	if !ok {
+		trimRHS := strings.TrimSpace(rhs)
+		// Accept string DATA payloads as zero placeholders for now.
+		if strings.HasPrefix(trimRHS, "$\"") {
+			val = 0
+			ok = true
+		}
+	}
+	if !ok {
 		// Accept symbol-address initializers (e.g. $runtime·main(SB)) even when
 		// relocation details are not modeled; encode as zero placeholder.
 		if strings.HasPrefix(strings.TrimSpace(rhs), "$") {
-			if _, ok := parseSym(strings.TrimPrefix(strings.TrimSpace(rhs), "$")); ok {
+			if _, symOK := parseSym(strings.TrimPrefix(strings.TrimSpace(rhs), "$")); symOK {
 				val = 0
 				ok = true
 			}

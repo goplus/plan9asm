@@ -21,6 +21,13 @@ func emitAMD64Prelude(b *strings.Builder) {
 	b.WriteString("declare i64 @llvm.bswap.i64(i64)\n")
 	b.WriteString("declare double @llvm.sqrt.f64(double)\n")
 	b.WriteString("declare double @llvm.rint.f64(double)\n")
+	b.WriteString("declare <16 x i8> @llvm.x86.ssse3.pshuf.b.128(<16 x i8>, <16 x i8>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesenc(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesenclast(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesdec(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesdeclast(<2 x i64>, <2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aesimc(<2 x i64>)\n")
+	b.WriteString("declare <2 x i64> @llvm.x86.aesni.aeskeygenassist(<2 x i64>, i8 immarg)\n")
 	b.WriteString("\n")
 	// x86-64 CRC32 (SSE4.2) and PCLMULQDQ intrinsics.
 	b.WriteString("declare i64 @llvm.x86.sse42.crc32.64.64(i64, i64)\n")
@@ -106,12 +113,17 @@ func (c *amd64Ctx) lowerBlocks() error {
 
 func (c *amd64Ctx) lowerInstr(bi int, ii int, ins Instr, emitBr amd64EmitBr, emitCondBr amd64EmitCondBr) (terminated bool, err error) {
 	op := strings.ToUpper(string(ins.Op))
+	if strings.HasPrefix(op, "GET_TLS(") {
+		// Macro-expanded helper from go_tls.h. Keep current simplified model.
+		return false, nil
+	}
 	switch Op(op) {
 	case OpTEXT, OpBYTE:
 		return false, nil
 	case OpRET:
 		return true, c.lowerRET()
-	case "PCALIGN", "NO_LOCAL_POINTERS", "NOP", "ADJSP", "CLD", "STD", "REP":
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "NOP", "ADJSP", "CLD", "STD", "REP",
+		"PUSH_REGS_HOST_TO_ABI0()", "POP_REGS_HOST_TO_ABI0()":
 		// Alignment directive emitted by stdlib asm; no semantic effect in our IR.
 		return false, nil
 	}

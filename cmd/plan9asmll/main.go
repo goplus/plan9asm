@@ -506,12 +506,24 @@ func targetTriple(goos, goarch string) string {
 func resolveSymFunc(pkgPath string) func(sym string) string {
 	return func(sym string) string {
 		sym = stripABISuffix(sym)
+		hadLocal := strings.HasSuffix(sym, "<>")
 		sym = strings.TrimSuffix(sym, "<>")
 		if strings.HasPrefix(sym, "·") {
-			return pkgPath + "." + strings.TrimPrefix(sym, "·")
+			name := pkgPath + "." + strings.TrimPrefix(sym, "·")
+			if hadLocal {
+				return name + "$local"
+			}
+			return name
 		}
 		sym = strings.ReplaceAll(sym, "∕", "/")
-		return strings.ReplaceAll(sym, "·", ".")
+		sym = strings.ReplaceAll(sym, "·", ".")
+		if hadLocal {
+			if !strings.Contains(sym, "/") && !strings.Contains(sym, ".") {
+				return pkgPath + "." + sym + "$local"
+			}
+			return sym + "$local"
+		}
+		return sym
 	}
 }
 

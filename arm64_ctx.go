@@ -408,6 +408,7 @@ func (c *arm64Ctx) ptrFromSB(sym string) (ptr string, err error) {
 	if !ok {
 		return "", fmt.Errorf("invalid (SB) sym ref: %q", sym)
 	}
+	base = strings.TrimPrefix(base, "$")
 	res := base
 	if strings.Contains(base, "·") || strings.Contains(base, "/") || strings.Contains(base, ".") {
 		res = c.resolve(base)
