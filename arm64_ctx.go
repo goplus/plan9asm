@@ -39,6 +39,8 @@ type arm64Ctx struct {
 	fpResults      []FrameSlot         // result slots (Index is result index)
 	fpResAllocaOff map[int64]string    // off(FP) -> alloca
 	fpResAllocaIdx map[int]string      // result index -> alloca
+	fpResWritten   map[int]bool        // result index -> direct writes to fp slot
+	fpResAddrTaken map[int]bool        // result index -> fp result slot address escaped
 }
 
 func newARM64Ctx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotate bool) *arm64Ctx {
@@ -56,6 +58,8 @@ func newARM64Ctx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) 
 		fpParams:       map[int64]FrameSlot{},
 		fpResAllocaOff: map[int64]string{},
 		fpResAllocaIdx: map[int]string{},
+		fpResWritten:   map[int]bool{},
+		fpResAddrTaken: map[int]bool{},
 	}
 	for _, s := range sig.Frame.Params {
 		c.fpParams[s.Offset] = s

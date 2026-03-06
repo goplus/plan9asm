@@ -885,11 +885,6 @@ func llvmArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz types.Siz
 		return nil, nil, startOff, nil
 	}
 
-	word := int64(wordSize(goarch))
-	wordTy := plan9asm.I64
-	if word == 4 {
-		wordTy = plan9asm.LLVMType("i32")
-	}
 	align := func(off, a int64) int64 {
 		if a <= 1 {
 			return off
@@ -907,55 +902,25 @@ func llvmArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz types.Siz
 		t := tup.At(i).Type()
 		off = align(off, int64(sz.Alignof(t)))
 
-		switch u := types.Unalias(t).(type) {
-		case *types.Basic:
-			if u.Kind() == types.String {
-				if flattenAgg {
-					args = append(args, plan9asm.Ptr, wordTy)
-					slots = append(slots,
-						plan9asm.FrameSlot{Offset: off + 0*word, Type: plan9asm.Ptr, Index: argIdx + 0, Field: -1},
-						plan9asm.FrameSlot{Offset: off + 1*word, Type: wordTy, Index: argIdx + 1, Field: -1},
-					)
-					argIdx += 2
-					off += int64(sz.Sizeof(t))
-					continue
+		parts, ok := framePartsForType(t, goarch)
+		if ok {
+			if flattenAgg {
+				for _, part := range parts {
+					args = append(args, part.Type)
+					slots = append(slots, plan9asm.FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: -1})
+					argIdx++
 				}
+			} else {
 				ty, e := llvmTypeForGo(t, goarch)
 				if e != nil {
 					return nil, nil, 0, e
 				}
 				args = append(args, ty)
-				slots = append(slots,
-					plan9asm.FrameSlot{Offset: off + 0*word, Type: plan9asm.Ptr, Index: argIdx, Field: 0},
-					plan9asm.FrameSlot{Offset: off + 1*word, Type: wordTy, Index: argIdx, Field: 1},
-				)
+				for _, part := range parts {
+					slots = append(slots, plan9asm.FrameSlot{Offset: off + part.Offset, Type: part.Type, Index: argIdx, Field: part.Field})
+				}
 				argIdx++
-				off += int64(sz.Sizeof(t))
-				continue
 			}
-		case *types.Slice:
-			if flattenAgg {
-				args = append(args, plan9asm.Ptr, wordTy, wordTy)
-				slots = append(slots,
-					plan9asm.FrameSlot{Offset: off + 0*word, Type: plan9asm.Ptr, Index: argIdx + 0, Field: -1},
-					plan9asm.FrameSlot{Offset: off + 1*word, Type: wordTy, Index: argIdx + 1, Field: -1},
-					plan9asm.FrameSlot{Offset: off + 2*word, Type: wordTy, Index: argIdx + 2, Field: -1},
-				)
-				argIdx += 3
-				off += int64(sz.Sizeof(t))
-				continue
-			}
-			ty, e := llvmTypeForGo(t, goarch)
-			if e != nil {
-				return nil, nil, 0, e
-			}
-			args = append(args, ty)
-			slots = append(slots,
-				plan9asm.FrameSlot{Offset: off + 0*word, Type: plan9asm.Ptr, Index: argIdx, Field: 0},
-				plan9asm.FrameSlot{Offset: off + 1*word, Type: wordTy, Index: argIdx, Field: 1},
-				plan9asm.FrameSlot{Offset: off + 2*word, Type: wordTy, Index: argIdx, Field: 2},
-			)
-			argIdx++
 			off += int64(sz.Sizeof(t))
 			continue
 		}
@@ -970,6 +935,42 @@ func llvmArgsAndFrameSlotsForTuple(tup *types.Tuple, goarch string, sz types.Siz
 		off += int64(sz.Sizeof(t))
 	}
 	return args, slots, off, nil
+}
+
+type framePart struct {
+	Offset int64
+	Type   plan9asm.LLVMType
+	Field  int
+}
+
+func framePartsForType(t types.Type, goarch string) ([]framePart, bool) {
+	word := int64(wordSize(goarch))
+	wordTy := plan9asm.I64
+	if word == 4 {
+		wordTy = plan9asm.LLVMType("i32")
+	}
+	switch u := types.Unalias(t).(type) {
+	case *types.Basic:
+		if u.Kind() == types.String {
+			return []framePart{
+				{Offset: 0, Type: plan9asm.Ptr, Field: 0},
+				{Offset: word, Type: wordTy, Field: 1},
+			}, true
+		}
+	case *types.Slice:
+		return []framePart{
+			{Offset: 0, Type: plan9asm.Ptr, Field: 0},
+			{Offset: word, Type: wordTy, Field: 1},
+			{Offset: 2 * word, Type: wordTy, Field: 2},
+		}, true
+	case *types.Interface:
+		// Both empty and non-empty interfaces occupy two pointers in Go ABI.
+		return []framePart{
+			{Offset: 0, Type: plan9asm.Ptr, Field: 0},
+			{Offset: word, Type: plan9asm.Ptr, Field: 1},
+		}, true
+	}
+	return nil, false
 }
 
 func llvmTypeForGo(t types.Type, goarch string) (plan9asm.LLVMType, error) {
@@ -1012,6 +1013,8 @@ func llvmTypeForGo(t types.Type, goarch string) (plan9asm.LLVMType, error) {
 			return plan9asm.LLVMType("{ ptr, i64, i64 }"), nil
 		}
 		return plan9asm.LLVMType("{ ptr, i32, i32 }"), nil
+	case *types.Interface:
+		return plan9asm.LLVMType("{ ptr, ptr }"), nil
 	case *types.Named:
 		return llvmTypeForGo(tt.Underlying(), goarch)
 	default:
