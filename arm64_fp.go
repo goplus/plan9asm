@@ -93,21 +93,9 @@ func (c *arm64Ctx) loadRetSlotFallback(slot FrameSlot) (string, error) {
 	switch slot.Type {
 	case I64:
 		return v64, nil
-	case I32:
+	case I32, I16, I8, I1:
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v64)
-		return "%" + t, nil
-	case I16:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v64)
-		return "%" + t, nil
-	case I8:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v64)
-		return "%" + t, nil
-	case I1:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", t, v64)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", t, v64, slot.Type)
 		return "%" + t, nil
 	case Ptr:
 		t := c.newTmp()

@@ -244,21 +244,9 @@ func (c *arm64Ctx) castI64RegToArg(v string, to LLVMType) (string, error) {
 	switch to {
 	case I64:
 		return v, nil
-	case I32:
+	case I32, I16, I8, I1:
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
-		return "%" + t, nil
-	case I16:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v)
-		return "%" + t, nil
-	case I8:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
-		return "%" + t, nil
-	case I1:
-		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", t, v)
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", t, v, to)
 		return "%" + t, nil
 	case Ptr:
 		t := c.newTmp()
