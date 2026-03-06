@@ -235,6 +235,7 @@ func (c *arm64Ctx) evalFPAddr64(op Operand) (string, error) {
 	if !ok {
 		return "0", nil
 	}
+	c.markFPResultAddrTaken(op.FPOffset)
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = ptrtoint ptr %s to i64\n", t, p)
 	return "%" + t, nil

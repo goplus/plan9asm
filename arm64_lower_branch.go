@@ -240,6 +240,59 @@ func (c *arm64Ctx) lowerBranch(bi int, op Op, ins Instr, emitBr arm64EmitBr, emi
 	return false, false, nil
 }
 
+func (c *arm64Ctx) castI64RegToArg(v string, to LLVMType) (string, error) {
+	switch to {
+	case I64:
+		return v, nil
+	case I32:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
+		return "%" + t, nil
+	case I16:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v)
+		return "%" + t, nil
+	case I8:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
+		return "%" + t, nil
+	case I1:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", t, v)
+		return "%" + t, nil
+	case Ptr:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, v)
+		return "%" + t, nil
+	default:
+		return "", fmt.Errorf("unsupported arg type %s", to)
+	}
+}
+
+func (c *arm64Ctx) structArgFromSequentialRegs(aggTy LLVMType, regCursor *int) (string, error) {
+	fields, ok := parseLiteralStructFields(aggTy)
+	if !ok || !literalFieldsAllScalar(fields) {
+		return "", fmt.Errorf("unsupported aggregate arg type %s", aggTy)
+	}
+	agg := "undef"
+	for fi, fty := range fields {
+		r := Reg(fmt.Sprintf("R%d", *regCursor))
+		*regCursor++
+		v, err := c.loadReg(r)
+		if err != nil {
+			return "", err
+		}
+		val, err := c.castI64RegToArg(v, fty)
+		if err != nil {
+			return "", err
+		}
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertvalue %s %s, %s %s, %d\n", t, aggTy, agg, fty, val, fi)
+		agg = "%" + t
+	}
+	return agg, nil
+}
+
 func (c *arm64Ctx) callSym(symOp Operand) error {
 	if symOp.Kind != OpSym {
 		return fmt.Errorf("arm64 call expects sym operand, got %s", symOp.String())
@@ -261,41 +314,39 @@ func (c *arm64Ctx) callSym(symOp Operand) error {
 		csig = FuncSig{Name: callee, Ret: Void}
 	}
 	args := make([]string, 0, len(csig.Args))
+	regCursor := 0
 	for i := 0; i < len(csig.Args); i++ {
-		r := Reg(fmt.Sprintf("R%d", i))
-		if i < len(csig.ArgRegs) {
-			r = csig.ArgRegs[i]
+		argTy := csig.Args[i]
+		if len(csig.ArgRegs) == 0 {
+			if fields, ok := parseLiteralStructFields(argTy); ok && literalFieldsAllScalar(fields) {
+				agg, err := c.structArgFromSequentialRegs(argTy, &regCursor)
+				if err != nil {
+					return fmt.Errorf("arm64 call %q: %w", callee, err)
+				}
+				args = append(args, fmt.Sprintf("%s %s", argTy, agg))
+				continue
+			}
+		}
+
+		r := Reg("")
+		if len(csig.ArgRegs) > 0 {
+			r = Reg(fmt.Sprintf("R%d", i))
+			if i < len(csig.ArgRegs) {
+				r = csig.ArgRegs[i]
+			}
+		} else {
+			r = Reg(fmt.Sprintf("R%d", regCursor))
+			regCursor++
 		}
 		v, err := c.loadReg(r)
 		if err != nil {
 			return err
 		}
-		switch csig.Args[i] {
-		case I64:
-			args = append(args, "i64 "+v)
-		case I32:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
-			args = append(args, "i32 %"+t)
-		case I16:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v)
-			args = append(args, "i16 %"+t)
-		case I8:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
-			args = append(args, "i8 %"+t)
-		case I1:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", t, v)
-			args = append(args, "i1 %"+t)
-		case Ptr:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, v)
-			args = append(args, "ptr %"+t)
-		default:
-			return fmt.Errorf("arm64 call %q unsupported arg type %s", callee, csig.Args[i])
+		val, err := c.castI64RegToArg(v, argTy)
+		if err != nil {
+			return fmt.Errorf("arm64 call %q unsupported arg type %s", callee, argTy)
 		}
+		args = append(args, fmt.Sprintf("%s %s", argTy, val))
 	}
 	if csig.Ret == Void {
 		fmt.Fprintf(c.b, "  call void %s(%s)\n", llvmGlobal(callee), strings.Join(args, ", "))
@@ -338,6 +389,7 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 	}
 
 	args := make([]string, 0, len(csig.Args))
+	regCursor := 0
 	for i := 0; i < len(csig.Args); i++ {
 		// If ArgRegs is empty, default to register-based passing (ABIInternal-ish)
 		// because most intra-asm tailcalls depend on explicit register setup.
@@ -388,42 +440,33 @@ func (c *arm64Ctx) tailCallAndRet(symOp Operand) error {
 			continue
 		}
 
+		if len(csig.ArgRegs) == 0 {
+			if fields, ok := parseLiteralStructFields(csig.Args[i]); ok && literalFieldsAllScalar(fields) {
+				agg, err := c.structArgFromSequentialRegs(csig.Args[i], &regCursor)
+				if err != nil {
+					return fmt.Errorf("arm64 tailcall %q: %w", callee, err)
+				}
+				args = append(args, fmt.Sprintf("%s %s", csig.Args[i], agg))
+				continue
+			}
+		}
+
 		r := Reg("")
 		if i < len(csig.ArgRegs) {
 			r = csig.ArgRegs[i]
 		} else {
-			r = Reg(fmt.Sprintf("R%d", i))
+			r = Reg(fmt.Sprintf("R%d", regCursor))
+			regCursor++
 		}
 		v, err := c.loadReg(r)
 		if err != nil {
 			return err
 		}
-		switch csig.Args[i] {
-		case I64:
-			args = append(args, "i64 "+v)
-		case I1:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i1\n", t, v)
-			args = append(args, "i1 %"+t)
-		case I8:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, v)
-			args = append(args, "i8 %"+t)
-		case I16:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i16\n", t, v)
-			args = append(args, "i16 %"+t)
-		case I32:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", t, v)
-			args = append(args, "i32 %"+t)
-		case Ptr:
-			t := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = inttoptr i64 %s to ptr\n", t, v)
-			args = append(args, "ptr %"+t)
-		default:
+		val, err := c.castI64RegToArg(v, csig.Args[i])
+		if err != nil {
 			return fmt.Errorf("arm64 tailcall unsupported arg type %q", csig.Args[i])
 		}
+		args = append(args, fmt.Sprintf("%s %s", csig.Args[i], val))
 	}
 
 	if csig.Ret == Void {

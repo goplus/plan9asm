@@ -190,9 +190,17 @@ func (c *arm64Ctx) lowerRET() error {
 		return nil
 	}
 
-	// Return from stored result slots.
+	// Return from stored result slots when they are explicitly written
+	// (or their addresses escape). Otherwise fall back to register returns.
 	if len(c.fpResults) == 1 {
-		v, err := c.loadFPResult(c.fpResults[0])
+		slot := c.fpResults[0]
+		var v string
+		var err error
+		if c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index] {
+			v, err = c.loadFPResult(slot)
+		} else {
+			v, err = c.loadRetSlotFallback(slot)
+		}
 		if err != nil {
 			return err
 		}
@@ -204,7 +212,13 @@ func (c *arm64Ctx) lowerRET() error {
 	cur := "undef"
 	last := ""
 	for _, slot := range c.fpResults {
-		v, err := c.loadFPResult(slot)
+		var v string
+		var err error
+		if c.fpResWritten[slot.Index] || c.fpResAddrTaken[slot.Index] {
+			v, err = c.loadFPResult(slot)
+		} else {
+			v, err = c.loadRetSlotFallback(slot)
+		}
 		if err != nil {
 			return err
 		}
