@@ -32,6 +32,12 @@ type amd64Ctx struct {
 	usedYRegs map[int]bool
 	yRegSlot  map[int]string // ymm reg index -> alloca name (<32 x i8>)
 
+	usedZRegs map[int]bool
+	zRegSlot  map[int]string // zmm reg index -> alloca name (<64 x i8>)
+
+	usedKRegs map[int]bool
+	kRegSlot  map[int]string // avx512 mask reg index -> alloca name (i64)
+
 	flagsZSlot   string
 	flagsSltSlot string // signed negative-style bit for J{L,LE,G,GE}-like checks
 	flagsCFSlot  string // carry/borrow style bit for J{B,BE,A,AE,NC,C}-like checks
@@ -62,6 +68,10 @@ func newAMD64Ctx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) 
 		xRegSlot:       map[int]string{},
 		usedYRegs:      map[int]bool{},
 		yRegSlot:       map[int]string{},
+		usedZRegs:      map[int]bool{},
+		zRegSlot:       map[int]string{},
+		usedKRegs:      map[int]bool{},
+		kRegSlot:       map[int]string{},
 		fpParams:       map[int64]FrameSlot{},
 		fpResAllocaOff: map[int64]string{},
 		fpResAllocaIdx: map[int]string{},
@@ -126,6 +136,30 @@ func amd64ParseYReg(r Reg) (idx int, ok bool) {
 	return n, true
 }
 
+func amd64ParseZReg(r Reg) (idx int, ok bool) {
+	s := strings.ToUpper(strings.TrimSpace(string(r)))
+	if !strings.HasPrefix(s, "Z") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(s, "Z"))
+	if err != nil || n < 0 || n > 31 {
+		return 0, false
+	}
+	return n, true
+}
+
+func amd64ParseKReg(r Reg) (idx int, ok bool) {
+	s := strings.ToUpper(strings.TrimSpace(string(r)))
+	if !strings.HasPrefix(s, "K") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(s, "K"))
+	if err != nil || n < 0 || n > 7 {
+		return 0, false
+	}
+	return n, true
+}
+
 func (c *amd64Ctx) scanUsedRegs() {
 	markReg := func(r Reg) {
 		if r == "" {
@@ -137,6 +171,14 @@ func (c *amd64Ctx) scanUsedRegs() {
 		}
 		if idx, ok := amd64ParseYReg(r); ok {
 			c.usedYRegs[idx] = true
+			return
+		}
+		if idx, ok := amd64ParseZReg(r); ok {
+			c.usedZRegs[idx] = true
+			return
+		}
+		if idx, ok := amd64ParseKReg(r); ok {
+			c.usedKRegs[idx] = true
 			return
 		}
 		c.usedRegs[r] = true
@@ -233,6 +275,30 @@ func (c *amd64Ctx) emitEntryAllocas() error {
 		c.yRegSlot[i] = name
 		fmt.Fprintf(c.b, "  %s = alloca <32 x i8>\n", name)
 		fmt.Fprintf(c.b, "  store <32 x i8> zeroinitializer, ptr %s\n", name)
+	}
+
+	zIdx := make([]int, 0, len(c.usedZRegs))
+	for i := range c.usedZRegs {
+		zIdx = append(zIdx, i)
+	}
+	sort.Ints(zIdx)
+	for _, i := range zIdx {
+		name := fmt.Sprintf("%%z%d", i)
+		c.zRegSlot[i] = name
+		fmt.Fprintf(c.b, "  %s = alloca <64 x i8>\n", name)
+		fmt.Fprintf(c.b, "  store <64 x i8> zeroinitializer, ptr %s\n", name)
+	}
+
+	kIdx := make([]int, 0, len(c.usedKRegs))
+	for i := range c.usedKRegs {
+		kIdx = append(kIdx, i)
+	}
+	sort.Ints(kIdx)
+	for _, i := range kIdx {
+		name := fmt.Sprintf("%%k%d", i)
+		c.kRegSlot[i] = name
+		fmt.Fprintf(c.b, "  %s = alloca i64\n", name)
+		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", name)
 	}
 
 	c.flagsZSlot = "%flags_z"
@@ -510,6 +576,60 @@ func (c *amd64Ctx) storeY(r Reg, v string) error {
 		return nil
 	}
 	fmt.Fprintf(c.b, "  store <32 x i8> %s, ptr %s\n", v, slot)
+	return nil
+}
+
+func (c *amd64Ctx) loadZ(r Reg) (string, error) {
+	idx, ok := amd64ParseZReg(r)
+	if !ok {
+		return "", fmt.Errorf("not a Z reg: %s", r)
+	}
+	slot, ok := c.zRegSlot[idx]
+	if !ok {
+		return "<64 x i8> zeroinitializer", nil
+	}
+	t := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load <64 x i8>, ptr %s\n", t, slot)
+	return "%" + t, nil
+}
+
+func (c *amd64Ctx) storeZ(r Reg, v string) error {
+	idx, ok := amd64ParseZReg(r)
+	if !ok {
+		return fmt.Errorf("not a Z reg: %s", r)
+	}
+	slot, ok := c.zRegSlot[idx]
+	if !ok {
+		return nil
+	}
+	fmt.Fprintf(c.b, "  store <64 x i8> %s, ptr %s\n", v, slot)
+	return nil
+}
+
+func (c *amd64Ctx) loadK(r Reg) (string, error) {
+	idx, ok := amd64ParseKReg(r)
+	if !ok {
+		return "", fmt.Errorf("not a K reg: %s", r)
+	}
+	slot, ok := c.kRegSlot[idx]
+	if !ok {
+		return "0", nil
+	}
+	t := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", t, slot)
+	return "%" + t, nil
+}
+
+func (c *amd64Ctx) storeK(r Reg, v string) error {
+	idx, ok := amd64ParseKReg(r)
+	if !ok {
+		return fmt.Errorf("not a K reg: %s", r)
+	}
+	slot, ok := c.kRegSlot[idx]
+	if !ok {
+		return nil
+	}
+	fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, slot)
 	return nil
 }
 

@@ -6,16 +6,24 @@ import (
 )
 
 func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err error) {
+	if raw := string(op); strings.Contains(raw, ".") {
+		if i := strings.IndexByte(raw, '.'); i >= 0 {
+			op = Op(raw[:i])
+		}
+	}
 	switch op {
 	case "MOVOU", "MOVOA", "MOVUPS", "MOVAPS", "MOVO", "MOVQ", "MOVL", "MOVD",
-		"VMOVDQU", "VMOVDQA", "VMOVNTDQ",
-		"VPCMPEQB", "VPMOVMSKB", "VZEROUPPER", "VPBROADCASTB", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPTEST",
+		"VMOVDQU", "VMOVDQA", "VMOVNTDQ", "VMOVDQU64", "VMOVDQA64", "VMOVAPS", "VMOVAPD",
+		"VPCMPEQB", "VPMOVMSKB", "VZEROUPPER", "VZEROALL", "VPBROADCASTB", "VPAND", "VPXOR", "VPOR", "VPADDD", "VPADDQ", "VPTEST",
+		"VPANDQ", "VPXORQ", "VPORQ", "VPCLMULQDQ", "VPTERNLOGD", "VEXTRACTF32X4",
+		"VPERMB", "VGF2P8AFFINEQB", "VPERMI2B", "VPCOMPRESSQ", "VPOPCNTB", "VPCMPUQ",
 		"VPSHUFB", "VPSHUFD", "VPSLLD", "VPSRLD", "VPSRLQ", "VPSLLQ", "VPSRLDQ", "VPSLLDQ",
 		"VPALIGNR", "VPERM2I128", "VPERM2F128", "VINSERTI128", "VPBLENDD",
 		"PXOR", "PAND", "PANDN", "PADDD", "PADDL", "PSUBL", "PCLMULQDQ", "PCMPEQB", "PCMPEQL", "PMOVMSKB",
 		"PSHUFB", "PSRLDQ", "PSLLDQ", "PSRLQ", "PSRLL", "PSLLL", "PSRAL", "PEXTRD", "PEXTRB",
 		"PINSRQ", "PINSRD", "PINSRB", "PINSRW", "PALIGNR", "PUNPCKLBW", "PSHUFL", "PSHUFD", "PSHUFHW", "SHUFPS",
-		"PBLENDW", "SHA256MSG1", "SHA256MSG2", "SHA256RNDS2",
+		"PBLENDW", "PADDQ", "KMOVB", "KMOVW", "KMOVQ", "KXORQ",
+		"SHA1NEXTE", "SHA1MSG1", "SHA1MSG2", "SHA1RNDS4", "SHA256MSG1", "SHA256MSG2", "SHA256RNDS2",
 		"AESENC", "AESENCLAST", "AESDEC", "AESDECLAST", "AESIMC", "AESKEYGENASSIST", "PCMPESTRI":
 		// ok
 	default:
@@ -71,12 +79,40 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		// No-op in LLVM IR. Kept for completeness.
 		return true, false, nil
 	}
+	if op == "VZEROALL" {
+		return true, false, nil
+	}
 
 	if op == "VMOVDQA" {
 		op = "VMOVDQU"
 	}
+	if op == "VMOVDQA64" {
+		op = "VMOVDQU64"
+	}
 	if op == "VPERM2F128" {
 		op = "VPERM2I128"
+	}
+	if op == "VMOVAPS" || op == "VMOVAPD" {
+		if len(ins.Args) == 2 {
+			if (ins.Args[0].Kind == OpReg && isAMD64ZReg(ins.Args[0].Reg)) ||
+				(ins.Args[1].Kind == OpReg && isAMD64ZReg(ins.Args[1].Reg)) {
+				op = "VMOVDQU64"
+			} else {
+				op = "VMOVDQU"
+			}
+		}
+	}
+	if op == "VPXORQ" || op == "VPANDQ" || op == "VPORQ" {
+		if len(ins.Args) == 3 && ins.Args[2].Kind == OpReg && !isAMD64ZReg(ins.Args[2].Reg) {
+			switch op {
+			case "VPXORQ":
+				op = "VPXOR"
+			case "VPANDQ":
+				op = "VPAND"
+			case "VPORQ":
+				op = "VPOR"
+			}
+		}
 	}
 
 	// MOVUPS/MOVAPS/MOVO are aliases for unaligned/aligned 128-bit xmm moves.
@@ -161,6 +197,324 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 	}
 
 	switch op {
+	case "KXORQ":
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 KXORQ expects Ksrc1, Ksrc2, Kdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseKReg(ins.Args[0].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseKReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseKReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		a, err := c.loadK(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadK(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		x := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor i64 %s, %s\n", x, a, b)
+		return true, false, c.storeK(ins.Args[2].Reg, "%"+x)
+
+	case "KMOVB", "KMOVW", "KMOVQ":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
+		}
+		bits := 64
+		loadTy := "i64"
+		switch op {
+		case "KMOVB":
+			bits, loadTy = 8, "i8"
+		case "KMOVW":
+			bits, loadTy = 16, "i16"
+		}
+		maskValue := func(v string) string {
+			if bits == 64 {
+				return v
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", t, v, (uint64(1)<<bits)-1)
+			return "%" + t
+		}
+		loadToI64 := func(opnd Operand) (string, error) {
+			switch opnd.Kind {
+			case OpReg:
+				if _, ok := amd64ParseKReg(opnd.Reg); ok {
+					v, err := c.loadK(opnd.Reg)
+					if err != nil {
+						return "", err
+					}
+					return maskValue(v), nil
+				}
+				v, err := c.loadReg(opnd.Reg)
+				if err != nil {
+					return "", err
+				}
+				return maskValue(v), nil
+			case OpMem:
+				addr, err := c.addrFromMem(opnd.Mem)
+				if err != nil {
+					return "", err
+				}
+				p := c.ptrFromAddrI64(addr)
+				ld := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, loadTy, p)
+				if bits == 64 {
+					return "%" + ld, nil
+				}
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext %s %%%s to i64\n", z, loadTy, ld)
+				return "%" + z, nil
+			default:
+				return "", fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
+			}
+		}
+		storeFromI64 := func(opnd Operand, v string) error {
+			switch opnd.Kind {
+			case OpReg:
+				if _, ok := amd64ParseKReg(opnd.Reg); ok {
+					return c.storeK(opnd.Reg, maskValue(v))
+				}
+				if bits == 64 {
+					return c.storeReg(opnd.Reg, v)
+				}
+				return c.storeReg(opnd.Reg, maskValue(v))
+			case OpMem:
+				addr, err := c.addrFromMem(opnd.Mem)
+				if err != nil {
+					return err
+				}
+				p := c.ptrFromAddrI64(addr)
+				if bits == 64 {
+					fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+					return nil
+				}
+				tr := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v, loadTy)
+				fmt.Fprintf(c.b, "  store %s %%%s, ptr %s, align 1\n", loadTy, tr, p)
+				return nil
+			default:
+				return fmt.Errorf("amd64 %s unsupported dst: %q", op, ins.Raw)
+			}
+		}
+		v, err := loadToI64(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, storeFromI64(ins.Args[1], v)
+
+	case "VPERMB":
+		if len(ins.Args) != 3 && len(ins.Args) != 4 {
+			return true, false, fmt.Errorf("amd64 VPERMB expects idx, src, dst or idx, src, Kmask, dst: %q", ins.Raw)
+		}
+		dstIdx := 2
+		if len(ins.Args) == 4 {
+			dstIdx = 3
+		}
+		if ins.Args[dstIdx].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPERMB expects Z destination register: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[dstIdx].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadZVecOperand(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		if len(ins.Args) == 4 {
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("amd64 VPERMB masked form expects K mask register: %q", ins.Raw)
+			}
+			if _, ok := amd64ParseKReg(ins.Args[2].Reg); !ok {
+				return false, false, nil
+			}
+			maskv, err := c.loadK(ins.Args[2].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			src = amd64SelectZByAnyMask(c, src, maskv)
+		}
+		return true, false, c.storeZ(ins.Args[dstIdx].Reg, src)
+
+	case "VGF2P8AFFINEQB":
+		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VGF2P8AFFINEQB expects $imm, mat, src, dst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[3].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadZVecOperand(ins.Args[2])
+		if err != nil {
+			return true, false, err
+		}
+		return true, false, c.storeZ(ins.Args[3].Reg, src)
+
+	case "VPERMI2B":
+		if len(ins.Args) != 3 && len(ins.Args) != 4 {
+			return true, false, fmt.Errorf("amd64 VPERMI2B expects src1, src2, dst or src1, src2, Kmask, dst: %q", ins.Raw)
+		}
+		dstIdx := 2
+		srcIdx := 1
+		if len(ins.Args) == 4 {
+			dstIdx = 3
+		}
+		if ins.Args[dstIdx].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPERMI2B expects Z destination register: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[dstIdx].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadZVecOperand(ins.Args[srcIdx])
+		if err != nil {
+			return true, false, err
+		}
+		if len(ins.Args) == 4 {
+			if ins.Args[2].Kind != OpReg {
+				return true, false, fmt.Errorf("amd64 VPERMI2B masked form expects K mask register: %q", ins.Raw)
+			}
+			if _, ok := amd64ParseKReg(ins.Args[2].Reg); !ok {
+				return false, false, nil
+			}
+			maskv, err := c.loadK(ins.Args[2].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			src = amd64SelectZByAnyMask(c, src, maskv)
+		}
+		return true, false, c.storeZ(ins.Args[dstIdx].Reg, src)
+
+	case "VPOPCNTB":
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPOPCNTB expects src, Zdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadZVecOperand(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		out := amd64BytePopcountZ(c, src)
+		return true, false, c.storeZ(ins.Args[1].Reg, out)
+
+	case "VPCMPUQ":
+		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPCMPUQ expects $imm, src1, src2, Kdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseKReg(ins.Args[3].Reg); !ok {
+			return false, false, nil
+		}
+		a, err := c.loadZVecOperand(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadZVecOperand(ins.Args[2])
+		if err != nil {
+			return true, false, err
+		}
+		ab := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", ab, a)
+		bb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", bb, b)
+		cmp := c.newTmp()
+		switch ins.Args[0].Imm & 0x7 {
+		case 0:
+			fmt.Fprintf(c.b, "  %%%s = icmp eq <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		case 1:
+			fmt.Fprintf(c.b, "  %%%s = icmp ult <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		case 2:
+			fmt.Fprintf(c.b, "  %%%s = icmp ule <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		case 4:
+			fmt.Fprintf(c.b, "  %%%s = icmp ne <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		case 5:
+			fmt.Fprintf(c.b, "  %%%s = icmp uge <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		case 6:
+			fmt.Fprintf(c.b, "  %%%s = icmp ugt <8 x i64> %%%s, %%%s\n", cmp, ab, bb)
+		default:
+			return true, false, fmt.Errorf("amd64 VPCMPUQ only supports imm 0/1/2/4/5/6 for now: %q", ins.Raw)
+		}
+		maskv := amd64PackI1x8ToI64(c, "%"+cmp)
+		return true, false, c.storeK(ins.Args[3].Reg, maskv)
+
+	case "VPCOMPRESSQ":
+		if len(ins.Args) != 3 || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPCOMPRESSQ expects Zsrc, Kmask, Zdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseKReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseZReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadZVecOperand(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		maskv, err := c.loadK(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		sv := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", sv, src)
+		outVec := "zeroinitializer"
+		writePos := "0"
+		for i := 0; i < 8; i++ {
+			bit := amd64MaskBitI1(c, maskv, i)
+			lane := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i64> %%%s, i32 %d\n", lane, sv, i)
+			inserted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = insertelement <8 x i64> %s, i64 %%%s, i32 %s\n", inserted, outVec, lane, writePos)
+			selected := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, <8 x i64> %%%s, <8 x i64> %s\n", selected, bit, inserted, outVec)
+			step := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i32\n", step, bit)
+			nextPos := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = add i32 %s, %%%s\n", nextPos, writePos, step)
+			outVec = "%" + selected
+			writePos = "%" + nextPos
+		}
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i64> %s to <64 x i8>\n", out, outVec)
+		return true, false, c.storeZ(ins.Args[2].Reg, "%"+out)
+
+	case "VPXORQ", "VPANDQ", "VPORQ":
+		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects src1, src2, dstReg: %q", op, ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		a, err := c.loadZVecOperand(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadZVecOperand(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		ab := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", ab, a)
+		bb := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", bb, b)
+		t := c.newTmp()
+		switch op {
+		case "VPXORQ":
+			fmt.Fprintf(c.b, "  %%%s = xor <8 x i64> %%%s, %%%s\n", t, ab, bb)
+		case "VPANDQ":
+			fmt.Fprintf(c.b, "  %%%s = and <8 x i64> %%%s, %%%s\n", t, ab, bb)
+		case "VPORQ":
+			fmt.Fprintf(c.b, "  %%%s = or <8 x i64> %%%s, %%%s\n", t, ab, bb)
+		}
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i64> %%%s to <64 x i8>\n", out, t)
+		return true, false, c.storeZ(ins.Args[2].Reg, "%"+out)
+
 	case "VPXOR", "VPOR", "VPADDD", "VPADDQ":
 		// V* three-operand op; support both X and Y destinations.
 		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
@@ -1077,6 +1431,58 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
 
+	case "SHA1NEXTE", "SHA1MSG1", "SHA1MSG2":
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
+		}
+		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadXVecOperand(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		dstv, err := c.loadX(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		s32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", s32, src)
+		d32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", d32, dstv)
+		add := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, d32, s32)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
+		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
+
+	case "SHA1RNDS4":
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 SHA1RNDS4 expects $imm, Xsrc, Xdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		src, err := c.loadXVecOperand(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		dstv, err := c.loadX(ins.Args[2].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		s32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", s32, src)
+		d32 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", d32, dstv)
+		add := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", add, d32, s32)
+		immv := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, <i32 %d, i32 %d, i32 %d, i32 %d>\n", immv, add, ins.Args[0].Imm, ins.Args[0].Imm, ins.Args[0].Imm, ins.Args[0].Imm)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, immv)
+		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
+
 	case "SHA256RNDS2":
 		// SHA256RNDS2 Xsrc, Xstate, Xdst
 		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
@@ -1102,6 +1508,76 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, add)
 		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
+
+	case "VMOVDQU64":
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 VMOVDQU64 expects src, dst: %q", ins.Raw)
+		}
+		if ins.Args[1].Kind == OpReg {
+			if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
+				if ins.Args[0].Kind == OpReg {
+					if _, ok := amd64ParseZReg(ins.Args[0].Reg); !ok {
+						return false, false, nil
+					}
+					v, err := c.loadZ(ins.Args[0].Reg)
+					if err != nil {
+						return true, false, err
+					}
+					return true, false, c.storeZ(ins.Args[1].Reg, v)
+				}
+				switch ins.Args[0].Kind {
+				case OpMem:
+					addr, err := c.addrFromMem(ins.Args[0].Mem)
+					if err != nil {
+						return true, false, err
+					}
+					p := c.ptrFromAddrI64(addr)
+					ld := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = load <64 x i8>, ptr %s, align 1\n", ld, p)
+					return true, false, c.storeZ(ins.Args[1].Reg, "%"+ld)
+				case OpSym:
+					p, err := c.ptrFromSB(ins.Args[0].Sym)
+					if err != nil {
+						return true, false, err
+					}
+					ld := c.newTmp()
+					fmt.Fprintf(c.b, "  %%%s = load <64 x i8>, ptr %s, align 1\n", ld, p)
+					return true, false, c.storeZ(ins.Args[1].Reg, "%"+ld)
+				default:
+					return true, false, fmt.Errorf("amd64 VMOVDQU64 unsupported src: %q", ins.Raw)
+				}
+			}
+		}
+		if ins.Args[0].Kind == OpReg {
+			if _, ok := amd64ParseZReg(ins.Args[0].Reg); ok {
+				src, err := c.loadZ(ins.Args[0].Reg)
+				if err != nil {
+					return true, false, err
+				}
+				switch ins.Args[1].Kind {
+				case OpMem:
+					addr, err := c.addrFromMem(ins.Args[1].Mem)
+					if err != nil {
+						return true, false, err
+					}
+					p := c.ptrFromAddrI64(addr)
+					fmt.Fprintf(c.b, "  store <64 x i8> %s, ptr %s, align 1\n", src, p)
+					return true, false, nil
+				case OpSym:
+					p, err := c.ptrFromSB(ins.Args[1].Sym)
+					if err != nil {
+						return true, false, err
+					}
+					fmt.Fprintf(c.b, "  store <64 x i8> %s, ptr %s, align 1\n", src, p)
+					return true, false, nil
+				case OpReg:
+					if _, ok := amd64ParseZReg(ins.Args[1].Reg); ok {
+						return true, false, c.storeZ(ins.Args[1].Reg, src)
+					}
+				}
+			}
+		}
+		return false, false, nil
 
 	case "VMOVDQU":
 		// VMOVDQU load/store for X/Y regs.
@@ -1386,8 +1862,8 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+t)
 
-	case "PADDL", "PADDD", "PSUBL":
-		// Two-operand packed i32 arithmetic: dst = dst (+|-) src.
+	case "PADDL", "PADDD", "PADDQ", "PSUBL":
+		// Two-operand packed arithmetic: dst = dst (+|-) src.
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects Xsrc, Xdst: %q", op, ins.Raw)
 		}
@@ -1402,18 +1878,22 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		if err != nil {
 			return true, false, err
 		}
+		vecTy := "<4 x i32>"
+		if op == "PADDQ" {
+			vecTy = "<2 x i64>"
+		}
 		as := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", as, src)
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to %s\n", as, src, vecTy)
 		bs := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bs, dstv)
+		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to %s\n", bs, dstv, vecTy)
 		x := c.newTmp()
-		if op == "PADDL" || op == "PADDD" {
-			fmt.Fprintf(c.b, "  %%%s = add <4 x i32> %%%s, %%%s\n", x, bs, as)
+		if op == "PADDL" || op == "PADDD" || op == "PADDQ" {
+			fmt.Fprintf(c.b, "  %%%s = add %s %%%s, %%%s\n", x, vecTy, bs, as)
 		} else {
-			fmt.Fprintf(c.b, "  %%%s = sub <4 x i32> %%%s, %%%s\n", x, bs, as)
+			fmt.Fprintf(c.b, "  %%%s = sub %s %%%s, %%%s\n", x, vecTy, bs, as)
 		}
 		out := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, x)
+		fmt.Fprintf(c.b, "  %%%s = bitcast %s %%%s to <16 x i8>\n", out, vecTy, x)
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
 
 	case "PSLLL", "PSRLL", "PSRAL":
@@ -1473,6 +1953,99 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		out := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = bitcast <4 x i32> %%%s to <16 x i8>\n", out, sext)
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+out)
+
+	case "VPCLMULQDQ":
+		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPCLMULQDQ expects $imm, Zsrc, Zdst, Zout: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseZReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseZReg(ins.Args[3].Reg); !ok {
+			return false, false, nil
+		}
+		imm := ins.Args[0].Imm & 0xff
+		src, err := c.loadZ(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		dstv, err := c.loadZ(ins.Args[2].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		bd := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", bd, dstv)
+		bs := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <64 x i8> %s to <8 x i64>\n", bs, src)
+		lanes := make([]string, 0, 4)
+		for i := 0; i < 4; i++ {
+			dlane := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <8 x i64> %%%s, <8 x i64> zeroinitializer, <2 x i32> <i32 %d, i32 %d>\n", dlane, bd, i*2, i*2+1)
+			slane := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shufflevector <8 x i64> %%%s, <8 x i64> zeroinitializer, <2 x i32> <i32 %d, i32 %d>\n", slane, bs, i*2, i*2+1)
+			call := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = call <2 x i64> @llvm.x86.pclmulqdq(<2 x i64> %%%s, <2 x i64> %%%s, i8 %d)\n", call, dlane, slane, imm)
+			lanes = append(lanes, "%"+call)
+		}
+		merged0 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <2 x i64> %s, <2 x i64> %s, <4 x i32> <i32 0, i32 1, i32 2, i32 3>\n", merged0, lanes[0], lanes[1])
+		merged1 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <2 x i64> %s, <2 x i64> %s, <4 x i32> <i32 0, i32 1, i32 2, i32 3>\n", merged1, lanes[2], lanes[3])
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <4 x i64> %%%s, <4 x i64> %%%s, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>\n", merged, merged0, merged1)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = bitcast <8 x i64> %%%s to <64 x i8>\n", out, merged)
+		return true, false, c.storeZ(ins.Args[3].Reg, "%"+out)
+
+	case "VPTERNLOGD":
+		if len(ins.Args) != 4 || ins.Args[0].Kind != OpImm || ins.Args[3].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VPTERNLOGD expects $imm, src1, src2, dst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[3].Reg); !ok {
+			return false, false, nil
+		}
+		if ins.Args[0].Imm != 0x96 {
+			return true, false, fmt.Errorf("amd64 VPTERNLOGD only supports imm 0x96 for now: %q", ins.Raw)
+		}
+		a, err := c.loadZVecOperand(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		b, err := c.loadZVecOperand(ins.Args[2])
+		if err != nil {
+			return true, false, err
+		}
+		dstv, err := c.loadZ(ins.Args[3].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		x1 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor <64 x i8> %s, %s\n", x1, dstv, a)
+		x2 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = xor <64 x i8> %%%s, %s\n", x2, x1, b)
+		return true, false, c.storeZ(ins.Args[3].Reg, "%"+x2)
+
+	case "VEXTRACTF32X4":
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 VEXTRACTF32X4 expects $imm, Zsrc, Xdst: %q", ins.Raw)
+		}
+		if _, ok := amd64ParseZReg(ins.Args[1].Reg); !ok {
+			return false, false, nil
+		}
+		if _, ok := amd64ParseXReg(ins.Args[2].Reg); !ok {
+			return false, false, nil
+		}
+		idx := int(ins.Args[0].Imm & 0x3)
+		src, err := c.loadZ(ins.Args[1].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shufflevector <64 x i8> %s, <64 x i8> zeroinitializer, <16 x i32> %s\n", out, src, llvmI32RangeMask(idx*16, 16))
+		return true, false, c.storeX(ins.Args[2].Reg, "%"+out)
 
 	case "PCLMULQDQ":
 		// PCLMULQDQ $imm, Xsrc, Xdst  => Xdst = pclmul(Xdst, Xsrc, imm)
@@ -1804,9 +2377,9 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		return true, false, c.storeX(ins.Args[1].Reg, "%"+back)
 
 	case "PEXTRD":
-		// PEXTRD $imm, Xsrc, dstReg (extract 32-bit lane)
-		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg || ins.Args[2].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 PEXTRD expects $imm, Xsrc, dstReg: %q", ins.Raw)
+		// PEXTRD $imm, Xsrc, dstReg|dstMem (extract 32-bit lane)
+		if len(ins.Args) != 3 || ins.Args[0].Kind != OpImm || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 PEXTRD expects $imm, Xsrc, dstReg|dstMem: %q", ins.Raw)
 		}
 		if _, ok := amd64ParseXReg(ins.Args[1].Reg); !ok {
 			return false, false, nil
@@ -1820,9 +2393,22 @@ func (c *amd64Ctx) lowerVec(op Op, ins Instr) (ok bool, terminated bool, err err
 		fmt.Fprintf(c.b, "  %%%s = bitcast <16 x i8> %s to <4 x i32>\n", bc, v)
 		ex := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = extractelement <4 x i32> %%%s, i32 %d\n", ex, bc, imm)
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, ex)
-		return true, false, c.storeReg(ins.Args[2].Reg, "%"+z)
+		switch ins.Args[2].Kind {
+		case OpReg:
+			z := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, ex)
+			return true, false, c.storeReg(ins.Args[2].Reg, "%"+z)
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[2].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			fmt.Fprintf(c.b, "  store i32 %%%s, ptr %s, align 1\n", ex, p)
+			return true, false, nil
+		default:
+			return true, false, fmt.Errorf("amd64 PEXTRD expects reg or mem destination: %q", ins.Raw)
+		}
 	}
 
 	// Other MOVQ/MOVL cases are handled elsewhere.
@@ -1908,6 +2494,11 @@ func llvmAllOnesI8Vec(n int) string {
 	return b.String()
 }
 
+func isAMD64ZReg(r Reg) bool {
+	_, ok := amd64ParseZReg(r)
+	return ok
+}
+
 func llvmI32RangeMask(start int, n int) string {
 	// Build <n x i32> <start, start+1, ...>.
 	if n <= 0 {
@@ -1923,4 +2514,64 @@ func llvmI32RangeMask(start int, n int) string {
 	}
 	b.WriteString(">")
 	return b.String()
+}
+
+func amd64SelectZByAnyMask(c *amd64Ctx, src, mask string) string {
+	nz := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %s, 0\n", nz, mask)
+	out := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, <64 x i8> %s, <64 x i8> zeroinitializer\n", out, nz, src)
+	return "%" + out
+}
+
+func amd64MaskBitI1(c *amd64Ctx, mask string, idx int) string {
+	shifted := mask
+	if idx > 0 {
+		sh := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", sh, mask, idx)
+		shifted = "%" + sh
+	}
+	one := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = and i64 %s, 1\n", one, shifted)
+	bit := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", bit, one)
+	return "%" + bit
+}
+
+func amd64PackI1x8ToI64(c *amd64Ctx, pred string) string {
+	acc := "0"
+	for i := 0; i < 8; i++ {
+		bit := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement <8 x i1> %s, i32 %d\n", bit, pred, i)
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %%%s to i64\n", ext, bit)
+		val := "%" + ext
+		if i > 0 {
+			sh := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n", sh, ext, i)
+			val = "%" + sh
+		}
+		orv := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %s, %s\n", orv, acc, val)
+		acc = "%" + orv
+	}
+	return acc
+}
+
+func amd64BytePopcountZ(c *amd64Ctx, src string) string {
+	out := "zeroinitializer"
+	for i := 0; i < 64; i++ {
+		elt := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = extractelement <64 x i8> %s, i32 %d\n", elt, src, i)
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", ext, elt)
+		pop := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.ctpop.i64(i64 %%%s)\n", pop, ext)
+		tr := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", tr, pop)
+		next := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = insertelement <64 x i8> %s, i8 %%%s, i32 %d\n", next, out, tr, i)
+		out = "%" + next
+	}
+	return out
 }

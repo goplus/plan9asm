@@ -5,8 +5,9 @@ This document defines what "complete Plan9 asm support" means for llgo.
 We intentionally do **not** aim to implement the full historical Plan 9
 assembler language. Instead, we target:
 
-- the subset of Go stdlib `.s` files selected by `go list -json` for a given
-  `GOOS/GOARCH`, and
+- the subset of lower-case Go stdlib `.s` files selected by `go list -json`
+  for a given `GOOS/GOARCH` (that is, Plan 9 asm sources, not GCC-style
+  `.S` files), and
 - the operand/addressing forms those files actually use.
 
 ## Workflow
@@ -14,13 +15,19 @@ assembler language. Instead, we target:
 1. Scan the corpus with:
 
    ```sh
-   go run ./chore/plan9asmscan -goos linux -goarch amd64 -format md -out /tmp/scan-linux-amd64.md
-   go run ./chore/plan9asmscan -goos linux -goarch arm64 -format md -out /tmp/scan-linux-arm64.md
-   go run ./chore/plan9asmscan -goos darwin -goarch amd64 -format md -out /tmp/scan-darwin-amd64.md
-   go run ./chore/plan9asmscan -goos darwin -goarch arm64 -format md -out /tmp/scan-darwin-arm64.md
+   go run ./cmd/plan9asmscan -goos linux -goarch amd64 -format md -out /tmp/scan-linux-amd64.md
+   go run ./cmd/plan9asmscan -goos linux -goarch arm64 -format md -out /tmp/scan-linux-arm64.md
+   go run ./cmd/plan9asmscan -goos darwin -goarch amd64 -format md -out /tmp/scan-darwin-amd64.md
+   go run ./cmd/plan9asmscan -goos darwin -goarch arm64 -format md -out /tmp/scan-darwin-arm64.md
    ```
 
-2. Group opcodes into clusters. A cluster is considered **complete** only when:
+2. Compile the corpus with:
+
+   ```sh
+   scripts/check-stdlib-corpus.sh
+   ```
+
+3. Group opcodes into clusters. A cluster is considered **complete** only when:
 
 - parser accepts every file in the corpus for that cluster
 - translator can emit `.ll` for those functions

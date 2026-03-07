@@ -39,11 +39,7 @@ func emitAMD64Prelude(b *strings.Builder) {
 	// SSE2 helpers used by stdlib asm (e.g. internal/bytealg).
 	b.WriteString("declare i32 @llvm.x86.sse2.pmovmskb.128(<16 x i8>)\n")
 	b.WriteString("\n")
-	// Attribute groups for optional ISA features:
-	// - #0: SSE4.2 CRC32 instruction (Castagnoli fast path)
-	// - #1: PCLMULQDQ + SSE4.1 (IEEE fast path)
-	b.WriteString("attributes #0 = { \"target-features\"=\"+sse4.2,+crc32\" }\n")
-	b.WriteString("attributes #1 = { \"target-features\"=\"+pclmul,+sse4.1\" }\n\n")
+	b.WriteString("\n")
 }
 
 func translateFuncAMD64(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotateSource bool) error {

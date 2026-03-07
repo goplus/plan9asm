@@ -7,7 +7,7 @@ import (
 
 func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVQ", "MOVL", "MOVLQZX", "MOVLQSX", "MOVB", "MOVW", "CMOVQLT":
+	case "MOVQ", "MOVD", "MOVL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVB", "MOVW", "CMOVQLT":
 		// ok
 	default:
 		return false, false, nil
@@ -18,6 +18,12 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 	src, dst := ins.Args[0], ins.Args[1]
 	if op == "MOVLQZX" {
 		op = "MOVL"
+	}
+	if op == "MOVD" {
+		op = "MOVQ"
+	}
+	if op == "MOVBQZX" {
+		op = "MOVB"
 	}
 	if op == "MOVLQSX" {
 		// Sign-extend i32 source to i64 destination register.
