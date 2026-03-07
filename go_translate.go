@@ -150,134 +150,87 @@ func goArchFor(goarch string) (Arch, error) {
 }
 
 func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string, goarch string, manualSig func(string) (FuncSig, bool)) (map[string]FuncSig, error) {
-	sigs := make(map[string]FuncSig, len(file.Funcs))
-	scope := pkg.Types.Scope()
 	sz := types.SizesFor("gc", goarch)
 	if sz == nil {
 		return nil, fmt.Errorf("missing sizes for goarch %q", goarch)
 	}
-	linknames := goLinknameRemoteToLocal(pkg.Syntax)
-	pkgPath := pkg.Path
-	if pkgPath == "" {
-		pkgPath = pkg.Types.Path()
+	b := goSigBuilder{
+		sigs:      make(map[string]FuncSig, len(file.Funcs)),
+		scope:     pkg.Types.Scope(),
+		sz:        sz,
+		linknames: goLinknameRemoteToLocal(pkg.Syntax),
+		pkgPath:   pkg.Path,
+		resolve:   resolve,
+		goarch:    goarch,
+		manualSig: manualSig,
 	}
+	if b.pkgPath == "" {
+		b.pkgPath = pkg.Types.Path()
+	}
+	if err := b.addDeclaredFuncSigs(file); err != nil {
+		return nil, err
+	}
+	if err := b.addReferencedFuncSigs(file); err != nil {
+		return nil, err
+	}
+	return b.sigs, nil
+}
 
+type goSigBuilder struct {
+	sigs      map[string]FuncSig
+	scope     *types.Scope
+	sz        types.Sizes
+	linknames map[string]string
+	pkgPath   string
+	resolve   func(sym string) string
+	goarch    string
+	manualSig func(string) (FuncSig, bool)
+}
+
+func (b *goSigBuilder) addDeclaredFuncSigs(file *File) error {
 	for i := range file.Funcs {
 		sym := goStripABISuffix(file.Funcs[i].Sym)
-		resolved := resolve(sym)
-		if ms, ok := goLookupManualSig(manualSig, resolved); ok {
-			sigs[resolved] = ms
+		resolved := b.resolve(sym)
+		if ms, ok := goLookupManualSig(b.manualSig, resolved); ok {
+			b.sigs[resolved] = ms
 			continue
 		}
 
-		declName, err := goDeclNameForSymbol(sym, linknames)
-		if err != nil {
-			return nil, err
-		}
-		obj := scope.Lookup(declName)
-		if obj == nil {
-			return nil, fmt.Errorf("missing Go declaration for asm symbol %q", sym)
-		}
-		fn, ok := obj.(*types.Func)
-		if !ok {
-			return nil, fmt.Errorf("asm symbol %q maps to non-func %T", sym, obj)
-		}
-		fs, err := goFuncSigForDeclaredFunc(resolved, fn, goarch, sz, true)
-		if err != nil {
-			return nil, err
-		}
-		sigs[resolved] = fs
-	}
-
-	splitSymPlusOff := func(s string) (base string, off int64) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return "", 0
-		}
-		sep := strings.LastIndexAny(s, "+-")
-		if sep <= 0 || sep == len(s)-1 {
-			return s, 0
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(s[sep:]), 0, 64)
-		if err != nil {
-			return s, 0
-		}
-		return strings.TrimSpace(s[:sep]), n
-	}
-	addGoDeclSig := func(sym string) error {
-		sym = goStripABISuffix(sym)
-		resolved := resolve(sym)
-		if resolved == "" {
-			return nil
-		}
-		if _, ok := sigs[resolved]; ok {
-			return nil
-		}
-		if ms, ok := goLookupManualSig(manualSig, resolved); ok {
-			sigs[resolved] = ms
-			return nil
-		}
-
-		declName := ""
-		remoteKey := strings.ReplaceAll(sym, "∕", "/")
-		remoteKey = strings.ReplaceAll(remoteKey, "·", ".")
-		if local, ok := linknames[remoteKey]; ok {
-			declName = local
-		} else if strings.HasPrefix(resolved, pkgPath+".") {
-			declName = strings.TrimPrefix(resolved, pkgPath+".")
-		} else if strings.HasPrefix(sym, "·") {
-			declName = strings.TrimPrefix(sym, "·")
-		}
-		if declName == "" {
-			return nil
-		}
-
-		obj := scope.Lookup(declName)
-		if obj == nil {
-			return nil
-		}
-		fn, ok := obj.(*types.Func)
-		if !ok {
-			return nil
-		}
-		fs, err := goFuncSigForDeclaredFunc(resolved, fn, goarch, sz, false)
+		declName, err := goDeclNameForSymbol(sym, b.linknames)
 		if err != nil {
 			return err
 		}
-		sigs[resolved] = fs
-		return nil
+		obj := b.scope.Lookup(declName)
+		if obj == nil {
+			return fmt.Errorf("missing Go declaration for asm symbol %q", sym)
+		}
+		fn, ok := obj.(*types.Func)
+		if !ok {
+			return fmt.Errorf("asm symbol %q maps to non-func %T", sym, obj)
+		}
+		fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, true)
+		if err != nil {
+			return err
+		}
+		b.sigs[resolved] = fs
 	}
+	return nil
+}
 
+func (b *goSigBuilder) addReferencedFuncSigs(file *File) error {
 	for _, fn := range file.Funcs {
-		callerResolved := resolve(goStripABISuffix(fn.Sym))
-		callerSig, hasCallerSig := sigs[callerResolved]
+		callerResolved := b.resolve(goStripABISuffix(fn.Sym))
+		callerSig, hasCallerSig := b.sigs[callerResolved]
 		for _, ins := range fn.Instrs {
-			op := string(ins.Op)
-			tailJump := false
-			switch op {
-			case "JMP", "B":
-				tailJump = true
-			case "CALL", "BL":
-			default:
+			base, tailJump, ok := goReferencedFunc(ins)
+			if !ok {
 				continue
 			}
-			if len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
-				continue
+			if err := b.addGoDeclSig(base); err != nil {
+				return err
 			}
-			s := strings.TrimSpace(ins.Args[0].Sym)
-			if !strings.HasSuffix(s, "(SB)") {
-				continue
-			}
-			s = strings.TrimSuffix(s, "(SB)")
-			base, off := splitSymPlusOff(s)
-			if base == "" || off != 0 {
-				continue
-			}
-			if err := addGoDeclSig(base); err != nil {
-				return nil, err
-			}
-			targetResolved := resolve(base)
-			if _, ok := sigs[targetResolved]; ok {
+			targetResolved := b.resolve(base)
+			if _, ok := b.sigs[targetResolved]; ok {
 				continue
 			}
 			if !tailJump || !hasCallerSig {
@@ -288,10 +241,93 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 			// via ManualSig when the inferred signature is not identical.
 			fs := callerSig
 			fs.Name = targetResolved
-			sigs[targetResolved] = fs
+			b.sigs[targetResolved] = fs
 		}
 	}
-	return sigs, nil
+	return nil
+}
+
+func (b *goSigBuilder) addGoDeclSig(sym string) error {
+	sym = goStripABISuffix(sym)
+	resolved := b.resolve(sym)
+	if resolved == "" {
+		return nil
+	}
+	if _, ok := b.sigs[resolved]; ok {
+		return nil
+	}
+	if ms, ok := goLookupManualSig(b.manualSig, resolved); ok {
+		b.sigs[resolved] = ms
+		return nil
+	}
+
+	declName := ""
+	remoteKey := strings.ReplaceAll(sym, "∕", "/")
+	remoteKey = strings.ReplaceAll(remoteKey, "·", ".")
+	if local, ok := b.linknames[remoteKey]; ok {
+		declName = local
+	} else if strings.HasPrefix(resolved, b.pkgPath+".") {
+		declName = strings.TrimPrefix(resolved, b.pkgPath+".")
+	} else if strings.HasPrefix(sym, "·") {
+		declName = strings.TrimPrefix(sym, "·")
+	}
+	if declName == "" {
+		return nil
+	}
+
+	obj := b.scope.Lookup(declName)
+	if obj == nil {
+		return nil
+	}
+	fn, ok := obj.(*types.Func)
+	if !ok {
+		return nil
+	}
+	fs, err := goFuncSigForDeclaredFunc(resolved, fn, b.goarch, b.sz, false)
+	if err != nil {
+		return err
+	}
+	b.sigs[resolved] = fs
+	return nil
+}
+
+func goReferencedFunc(ins Instr) (base string, tailJump bool, ok bool) {
+	switch string(ins.Op) {
+	case "JMP", "B":
+		tailJump = true
+	case "CALL", "BL":
+	default:
+		return "", false, false
+	}
+	if len(ins.Args) != 1 || ins.Args[0].Kind != OpSym {
+		return "", false, false
+	}
+	s := strings.TrimSpace(ins.Args[0].Sym)
+	if !strings.HasSuffix(s, "(SB)") {
+		return "", false, false
+	}
+	s = strings.TrimSuffix(s, "(SB)")
+	base, off := goSplitSymPlusOff(s)
+	if base == "" || off != 0 {
+		return "", false, false
+	}
+	return base, tailJump, true
+}
+
+func goSplitSymPlusOff(s string) (base string, off int64) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0
+	}
+	sep := strings.LastIndexAny(s, "+-")
+	if sep <= 0 || sep == len(s)-1 {
+		return s, 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s[sep:]), 0, 64)
+	if err != nil {
+		return s, 0
+	}
+	return strings.TrimSpace(s[:sep]), n
 }
 
 func goLookupManualSig(manual func(string) (FuncSig, bool), resolved string) (FuncSig, bool) {
