@@ -614,6 +614,9 @@ func packageOutputDir(importPath string) string {
 func packageSFilesAbs(p goListPackage) []string {
 	files := make([]string, 0, len(p.SFiles))
 	for _, f := range p.SFiles {
+		if filepath.Ext(f) != ".s" {
+			continue
+		}
 		if filepath.IsAbs(f) {
 			files = append(files, f)
 		} else if p.Dir != "" {

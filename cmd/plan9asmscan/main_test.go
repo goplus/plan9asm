@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -89,5 +91,60 @@ func TestShortStdPath(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "local.s")
 	if got := shortStdPath(outside); got != filepath.ToSlash(outside) {
 		t.Fatalf("shortStdPath(outside) = %q", got)
+	}
+}
+
+func TestExtractSupportedOpsScansRepoRoot(t *testing.T) {
+	dir := t.TempDir()
+	src := `package plan9asm
+
+func lower(op string) {
+	switch op {
+	case "VPXORQ", "VMOVDQU64", "AESENC":
+	}
+}
+
+func lowerOp(op any) {
+	switch op {
+	case OpMOVQ, OpRET:
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "amd64_lower_vec.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	supported, err := extractSupportedOps(dir, "amd64")
+	if err != nil {
+		t.Fatalf("extractSupportedOps: %v", err)
+	}
+	want := []string{"VPXORQ", "VMOVDQU64", "AESENC", "MOVQ", "RET"}
+	got := make([]string, 0, len(want))
+	for _, op := range want {
+		if _, ok := supported[op]; ok {
+			got = append(got, op)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("supported ops = %#v, want %#v", got, want)
+	}
+}
+
+func TestFamilyOfAMD64(t *testing.T) {
+	cases := map[string]string{
+		"VPXORQ":         "avx-vector",
+		"VGF2P8AFFINEQB": "gfni",
+		"KMOVQ":          "avx512-mask",
+		"AESENCLAST":     "aes",
+		"SHA1MSG1":       "sha",
+		"RORXQ":          "bmi2-adx",
+		"JEQ":            "branch-alias",
+		"MOVOA":          "sse-simd",
+		"MOVLQZX":        "move-pseudo",
+		"XADDQ":          "atomic-memory",
+	}
+	for op, want := range cases {
+		if got := familyOf("amd64", op); got != want {
+			t.Fatalf("familyOf(%q) = %q, want %q", op, got, want)
+		}
 	}
 }

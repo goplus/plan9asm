@@ -56,13 +56,10 @@ jobs:
       - name: Go build
         run: go build ./...
 
-      - name: Feature attr regression
-        run: go test -run 'TestInferFuncTargetFeatures|TestStdlibHashCRC32_AMD64_Compile' ./...
-
-      - name: Smoke test cmd/plan9asm (list + transpile)
+      - name: Stdlib asm corpus gate
         run: |
-          go run -C cmd/plan9asm . list -goos=linux -goarch=amd64 runtime > /dev/null
-          go run -C cmd/plan9asm . transpile -goos=linux -goarch=amd64 -dir _out/ci/plan9asm-syscall syscall
+          chmod +x scripts/check-stdlib-corpus.sh
+          scripts/check-stdlib-corpus.sh
 
   test:
     runs-on: ubuntu-latest

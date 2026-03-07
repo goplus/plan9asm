@@ -45,6 +45,7 @@ type report struct {
 
 	OpsByFreq    []opReport      `json:"ops_by_freq"`
 	ClusterStats []clusterReport `json:"cluster_stats"`
+	FamilyStats  []familyReport  `json:"unsupported_family_stats"`
 	Unsupported  []opReport      `json:"unsupported"`
 	ParseErrs    []parseErr      `json:"parse_errs,omitempty"`
 }
@@ -62,9 +63,15 @@ type clusterReport struct {
 	Hits      int    `json:"hits"`
 }
 
+type familyReport struct {
+	Family    string   `json:"family"`
+	UniqueOps int      `json:"unique_ops"`
+	Hits      int      `json:"hits"`
+	Examples  []string `json:"examples,omitempty"`
+}
+
 var (
-	reCaseString = regexp.MustCompile(`case\s+"([A-Za-z0-9_.$]+)"`)
-	reCaseOp     = regexp.MustCompile(`case\s+Op([A-Za-z0-9_]+)`)
+	reCaseClause = regexp.MustCompile(`case\s+([^:]+):`)
 )
 
 func main() {
@@ -173,9 +180,12 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch) (map[string]*opStat, []par
 		if len(p.SFiles) == 0 || p.Dir == "" {
 			continue
 		}
+		sfiles := packageSFiles(p)
+		if len(sfiles) == 0 {
+			continue
+		}
 		pkgWithSFiles++
-		for _, sf := range p.SFiles {
-			path := filepath.Join(p.Dir, sf)
+		for _, path := range sfiles {
 			src, err := os.ReadFile(path)
 			if err != nil {
 				return nil, nil, 0, 0, fmt.Errorf("read %s: %w", path, err)
@@ -185,6 +195,9 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch) (map[string]*opStat, []par
 
 			file, err := plan9asm.Parse(arch, string(src))
 			if err != nil {
+				if strings.Contains(err.Error(), "no TEXT directive found") {
+					continue
+				}
 				parseErrs = append(parseErrs, parseErr{File: rel, Err: err.Error()})
 				continue
 			}
@@ -219,6 +232,21 @@ func scanPackages(pkgs []pkgJSON, arch plan9asm.Arch) (map[string]*opStat, []par
 		}
 	}
 	return ops, parseErrs, pkgWithSFiles, asmFiles, nil
+}
+
+func packageSFiles(p pkgJSON) []string {
+	files := make([]string, 0, len(p.SFiles))
+	for _, f := range p.SFiles {
+		if filepath.Ext(f) != ".s" {
+			continue
+		}
+		if filepath.IsAbs(f) {
+			files = append(files, f)
+		} else if p.Dir != "" {
+			files = append(files, filepath.Join(p.Dir, f))
+		}
+	}
+	return files
 }
 
 func addOpStat(ops map[string]*opStat, op, relFile, pkg string, count int) {
@@ -274,22 +302,49 @@ func extractSupportedOps(repoRoot, goarch string) (map[string]struct{}, error) {
 		"PCDATA":   {},
 	}
 
-	glob := filepath.Join(repoRoot, "internal", "plan9asm", goarch+"_*.go")
-	files, err := filepath.Glob(glob)
-	if err != nil {
-		return nil, err
+	seen := map[string]struct{}{}
+	var files []string
+	patterns := []string{
+		filepath.Join(repoRoot, goarch+"_*.go"),
+		filepath.Join(repoRoot, "parser.go"),
 	}
-	sort.Strings(files)
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(matches)
+		for _, match := range matches {
+			if strings.HasSuffix(match, "_test.go") {
+				continue
+			}
+			if _, ok := seen[match]; ok {
+				continue
+			}
+			seen[match] = struct{}{}
+			files = append(files, match)
+		}
+	}
 	for _, f := range files {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", f, err)
 		}
-		for _, m := range reCaseString.FindAllSubmatch(src, -1) {
-			supported[normalizeOp(string(m[1]))] = struct{}{}
-		}
-		for _, m := range reCaseOp.FindAllSubmatch(src, -1) {
-			supported[normalizeOp(string(m[1]))] = struct{}{}
+		for _, m := range reCaseClause.FindAllSubmatch(src, -1) {
+			items := strings.Split(string(m[1]), ",")
+			for _, item := range items {
+				item = strings.TrimSpace(item)
+				switch {
+				case strings.HasPrefix(item, "\"") && strings.HasSuffix(item, "\"") && len(item) >= 2:
+					if op := normalizeOp(strings.Trim(item, "\"")); op != "" {
+						supported[op] = struct{}{}
+					}
+				case strings.HasPrefix(item, "Op"):
+					if op := normalizeOp(strings.TrimPrefix(item, "Op")); op != "" {
+						supported[op] = struct{}{}
+					}
+				}
+			}
 		}
 	}
 	return supported, nil
@@ -310,13 +365,18 @@ func buildReport(
 		AsmFiles:         asmFiles,
 		UniqueOps:        len(ops),
 		ParseErrCount:    len(parseErrs),
+		OpsByFreq:        []opReport{},
+		ClusterStats:     []clusterReport{},
+		FamilyStats:      []familyReport{},
+		Unsupported:      []opReport{},
 		ParseErrs:        parseErrs,
 	}
 
 	clusterAgg := map[string]*clusterReport{}
+	familyAgg := map[string]*familyReport{}
 
-	var all []opReport
-	var unsupported []opReport
+	all := []opReport{}
+	unsupported := []opReport{}
 	for op, st := range ops {
 		cl := clusterOf(goarch, op)
 		files := topFiles(st.Files, 4)
@@ -341,6 +401,17 @@ func buildReport(
 		}
 		if _, ok := supported[op]; !ok {
 			unsupported = append(unsupported, item)
+			fam := familyOf(goarch, op)
+			agg := familyAgg[fam]
+			if agg == nil {
+				agg = &familyReport{Family: fam}
+				familyAgg[fam] = agg
+			}
+			agg.UniqueOps++
+			agg.Hits += st.Count
+			if len(agg.Examples) < 6 {
+				agg.Examples = append(agg.Examples, op)
+			}
 		}
 	}
 
@@ -362,11 +433,20 @@ func buildReport(
 	for _, c := range clusterAgg {
 		rep.ClusterStats = append(rep.ClusterStats, *c)
 	}
+	for _, f := range familyAgg {
+		rep.FamilyStats = append(rep.FamilyStats, *f)
+	}
 	sort.Slice(rep.ClusterStats, func(i, j int) bool {
 		if rep.ClusterStats[i].Hits != rep.ClusterStats[j].Hits {
 			return rep.ClusterStats[i].Hits > rep.ClusterStats[j].Hits
 		}
 		return rep.ClusterStats[i].Cluster < rep.ClusterStats[j].Cluster
+	})
+	sort.Slice(rep.FamilyStats, func(i, j int) bool {
+		if rep.FamilyStats[i].Hits != rep.FamilyStats[j].Hits {
+			return rep.FamilyStats[i].Hits > rep.FamilyStats[j].Hits
+		}
+		return rep.FamilyStats[i].Family < rep.FamilyStats[j].Family
 	})
 
 	sort.Slice(rep.ParseErrs, func(i, j int) bool {
@@ -392,6 +472,18 @@ func renderMarkdown(rep report) []byte {
 	b.WriteString("|---|---:|---:|\n")
 	for _, c := range rep.ClusterStats {
 		fmt.Fprintf(&b, "| %s | %d | %d |\n", c.Cluster, c.UniqueOps, c.Hits)
+	}
+
+	b.WriteString("\n## Unsupported Families\n\n")
+	if len(rep.FamilyStats) == 0 {
+		b.WriteString("_none_\n")
+	} else {
+		b.WriteString("| family | unique ops | hits | examples |\n")
+		b.WriteString("|---|---:|---:|---|\n")
+		for _, fam := range rep.FamilyStats {
+			fmt.Fprintf(&b, "| %s | %d | %d | %s |\n",
+				fam.Family, fam.UniqueOps, fam.Hits, strings.Join(fam.Examples, ", "))
+		}
 	}
 
 	b.WriteString("\n## Unsupported Ops (vs current lowerers)\n\n")
@@ -464,6 +556,53 @@ func clusterOf(goarch, op string) string {
 			return "arm64-bit-shift"
 		default:
 			return "arm64-scalar"
+		}
+	default:
+		return "other"
+	}
+}
+
+func familyOf(goarch, op string) string {
+	switch goarch {
+	case "amd64":
+		switch {
+		case strings.HasPrefix(op, "AES"):
+			return "aes"
+		case strings.HasPrefix(op, "SHA1") || strings.HasPrefix(op, "SHA256"):
+			return "sha"
+		case strings.HasPrefix(op, "VGF2P8") || strings.Contains(op, "GF2P8"):
+			return "gfni"
+		case strings.HasPrefix(op, "KMOV") || strings.HasPrefix(op, "KXOR") || strings.HasPrefix(op, "KAND") || strings.HasPrefix(op, "KOR"):
+			return "avx512-mask"
+		case strings.HasPrefix(op, "VP") || strings.HasPrefix(op, "VMOV") || strings.HasPrefix(op, "VPERM") || strings.HasPrefix(op, "VEXTRACT") || strings.HasPrefix(op, "VPCOMPRESS") || strings.HasPrefix(op, "VPOPCNT") || strings.HasPrefix(op, "VZERO"):
+			return "avx-vector"
+		case strings.HasPrefix(op, "P") || op == "MOVO" || op == "MOVOA" || op == "MOVUPS" || op == "MOVAPS":
+			return "sse-simd"
+		case strings.HasPrefix(op, "ADCX") || strings.HasPrefix(op, "ADOX") || strings.HasPrefix(op, "MULX") || strings.HasPrefix(op, "RORX") || strings.HasPrefix(op, "SHLX") || strings.HasPrefix(op, "SARX") || strings.HasPrefix(op, "SHRX"):
+			return "bmi2-adx"
+		case strings.HasPrefix(op, "CMPXCHG") || strings.HasPrefix(op, "XADD") || strings.HasSuffix(op, "FENCE") || op == "PAUSE":
+			return "atomic-memory"
+		case strings.HasPrefix(op, "J") || strings.HasPrefix(op, "CMOV") || op == "CALL":
+			return "branch-alias"
+		case strings.HasPrefix(op, "ROR") || strings.HasPrefix(op, "ROL") || strings.HasPrefix(op, "SHL") || strings.HasPrefix(op, "SHR") || strings.HasPrefix(op, "SAL") || strings.HasPrefix(op, "BSWAP") || strings.HasPrefix(op, "POPCNT"):
+			return "bit-rotate-shift"
+		case strings.HasPrefix(op, "MOV") || strings.HasPrefix(op, "LEA") || op == "REP" || op == "CLD" || op == "STD" || op == "NOP" || op == "ADJSP":
+			return "move-pseudo"
+		default:
+			return "scalar-misc"
+		}
+	case "arm64":
+		switch {
+		case strings.HasPrefix(op, "AES") || strings.HasPrefix(op, "SHA"):
+			return "crypto"
+		case strings.HasPrefix(op, "V"):
+			return "neon"
+		case op == "B" || op == "BL" || strings.HasPrefix(op, "B.") || strings.HasPrefix(op, "CB") || strings.HasPrefix(op, "TB") || op == "RET":
+			return "branch"
+		case strings.Contains(op, "XR") || strings.Contains(op, "CAS") || strings.Contains(op, "SWP") || op == "DMB" || op == "DSB" || op == "ISB":
+			return "atomic-memory"
+		default:
+			return "scalar-misc"
 		}
 	default:
 		return "other"
