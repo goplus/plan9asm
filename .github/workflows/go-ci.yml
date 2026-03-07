@@ -56,6 +56,9 @@ jobs:
       - name: Go build
         run: go build ./...
 
+      - name: Feature attr regression
+        run: go test -run 'TestInferFuncTargetFeatures|TestStdlibHashCRC32_AMD64_Compile' ./...
+
       - name: Smoke test cmd/plan9asm (list + transpile)
         run: |
           go run -C cmd/plan9asm . list -goos=linux -goarch=amd64 runtime > /dev/null
