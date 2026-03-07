@@ -48,6 +48,7 @@ func (c *arm64Ctx) lowerVec(op Op, postInc bool, ins Instr) (ok bool, terminated
 		"SHA1C", "SHA1H", "SHA1M", "SHA1P", "SHA1SU0", "SHA1SU1",
 		"SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
 		"SHA512H", "SHA512H2", "SHA512SU0", "SHA512SU1",
+		"VEOR3", "VBCAX", "VRAX1", "VXAR",
 		"VPMULL", "VPMULL2",
 		"VREV32", "VREV64", "VSHL", "VSRI", "VTBL", "VZIP1", "VZIP2", "VEXT", "VUSHR",
 		"VLD1R", "VLD4R", "VDUP":

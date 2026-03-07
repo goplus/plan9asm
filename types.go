@@ -106,10 +106,15 @@ func parseReg(s string) (Reg, bool) {
 		}
 	}
 	// SIMD/FP registers:
-	// - x86: X0..X15, Y0..Y15
+	// - x86: X0..X31, Y0..Y31, Z0..Z31, K0..K7
 	// - arm64: V0..V31, with optional lane suffix (e.g. V0.B16, V8.D[0])
 	// - arm64 FP: F0..F31
-	if (strings.HasPrefix(ss, "X") || strings.HasPrefix(ss, "Y") || strings.HasPrefix(ss, "V") || strings.HasPrefix(ss, "F")) && len(ss) >= 2 {
+	if strings.HasPrefix(ss, "K") && len(ss) >= 2 {
+		if n, err := strconv.Atoi(ss[1:]); err == nil && 0 <= n && n <= 7 {
+			return Reg(ss), true
+		}
+	}
+	if (strings.HasPrefix(ss, "X") || strings.HasPrefix(ss, "Y") || strings.HasPrefix(ss, "Z") || strings.HasPrefix(ss, "V") || strings.HasPrefix(ss, "F")) && len(ss) >= 2 {
 		i := 1
 		for i < len(ss) && ss[i] >= '0' && ss[i] <= '9' {
 			i++

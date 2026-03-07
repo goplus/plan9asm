@@ -22,17 +22,14 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			}
 			return true, false, nil
 		case OpMem:
-			// Go asm commonly writes indirect call via register as CALL (DX).
-			// Treat plain (REG) as indirect-through-register target.
-			mem := ins.Args[0].Mem
-			if mem.Base == "" || mem.Index != "" || mem.Scale != 0 || mem.Off != 0 {
-				return true, false, fmt.Errorf("amd64 CALL unsupported mem target: %q", ins.Raw)
-			}
-			addr, err := c.loadReg(mem.Base)
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
 			if err != nil {
 				return true, false, err
 			}
-			if err := c.callIndirectAddr(addr); err != nil {
+			p := c.ptrFromAddrI64(addr)
+			fnptr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", fnptr, p)
+			if err := c.callIndirectAddr("%" + fnptr); err != nil {
 				return true, false, err
 			}
 			return true, false, nil
@@ -112,17 +109,17 @@ func (c *amd64Ctx) lowerBranch(bi int, ii int, op Op, ins Instr, emitBr amd64Emi
 			break
 		}
 		if op == "JMP" {
-			mem := ins.Args[0].Mem
-			if mem.Base != "" && mem.Index == "" && mem.Scale == 0 && mem.Off == 0 {
-				addr, err := c.loadReg(mem.Base)
-				if err != nil {
-					return true, false, err
-				}
-				if err := c.tailCallIndirectAddrAndRet(addr); err != nil {
-					return true, false, err
-				}
-				return true, true, nil
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
 			}
+			p := c.ptrFromAddrI64(addr)
+			fnptr := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", fnptr, p)
+			if err := c.tailCallIndirectAddrAndRet("%" + fnptr); err != nil {
+				return true, false, err
+			}
+			return true, true, nil
 		}
 		fallthrough
 	default:

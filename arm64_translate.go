@@ -122,7 +122,7 @@ func (c *arm64Ctx) lowerInstr(bi int, ins Instr, emitBr arm64EmitBr, emitCondBr 
 		return false, nil
 	case OpRET:
 		return true, c.lowerRET()
-	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "WORD", "DMB", "PRFM",
+	case "PCALIGN", "NO_LOCAL_POINTERS", "PCDATA", "FUNCDATA", "WORD", "DMB", "DSB", "ISB", "DC", "PRFM",
 		"BREAK", "BRK", "UNDEF", "#UNDEF", "YIELD", "NOP",
 		"FLDPD", "FSTPD", "FMOVS", "STY",
 		"P256ADDINLINE", "P256MULBY2INLINE", "MOV", "CCMP",
