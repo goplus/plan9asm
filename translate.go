@@ -125,6 +125,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 
 	emitExternFuncDecls(&b, file, resolve, opt.Sigs)
 
+	attrRegistry := newFeatureAttrRegistry()
 	for i := range file.Funcs {
 		fn := &file.Funcs[i]
 		name := resolve(fn.Sym)
@@ -140,6 +141,9 @@ func translateIRText(file *File, opt Options) (string, error) {
 		}
 		if sig.Ret == "" {
 			return "", fmt.Errorf("missing return type for %q", name)
+		}
+		if sig.Attrs == "" {
+			sig.Attrs = attrRegistry.ref(inferFuncTargetFeatures(file.Arch, *fn))
 		}
 		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
 			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
@@ -160,6 +164,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 		}
 		b.WriteString("\n")
 	}
+	attrRegistry.emit(&b)
 	return b.String(), nil
 }
 

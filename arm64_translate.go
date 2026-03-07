@@ -27,7 +27,7 @@ func emitARM64Prelude(b *strings.Builder) {
 	b.WriteString("\n")
 	// Attribute group used by some functions to enable optional ISA features.
 	// (Example: "+crc" for hash/crc32 arm64 fast paths.)
-	b.WriteString("attributes #0 = { \"target-features\"=\"+crc\" }\n\n")
+	b.WriteString("\n")
 }
 
 func translateFuncARM64(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) string, sigs map[string]FuncSig, annotateSource bool) error {
