@@ -13,6 +13,8 @@ import (
 	"github.com/goplus/llvm"
 )
 
+// GoPackage provides the Go declarations and syntax needed to bind a Plan 9
+// asm file to real Go symbols.
 type GoPackage struct {
 	Path    string
 	Types   *types.Package
@@ -20,6 +22,10 @@ type GoPackage struct {
 	Syntax  []*ast.File
 }
 
+// GoModuleOptions configures TranslateGoModule.
+//
+// GOARCH is required and currently accepts only "amd64", "386", and "arm64".
+// If ResolveSym is nil, the default resolver only strips ABI suffixes.
 type GoModuleOptions struct {
 	FileName       string
 	GOOS           string
@@ -32,17 +38,26 @@ type GoModuleOptions struct {
 	ManualSig  func(resolved string) (FuncSig, bool)
 }
 
+// GoFunction records the original TEXT symbol and its resolved LLVM symbol.
 type GoFunction struct {
 	TextSymbol     string
 	ResolvedSymbol string
 }
 
+// GoModuleTranslation is the result of TranslateGoModule.
+//
+// Callers own Module and must call Module.Dispose when finished with it.
 type GoModuleTranslation struct {
 	Module     llvm.Module
 	Signatures map[string]FuncSig
 	Functions  []GoFunction
 }
 
+// TranslateGoModule binds Go declarations to a Plan 9 asm file and translates
+// the result into an LLVM module in one call.
+//
+// The package must provide go/types information for the declarations referenced
+// by the assembly. Methods and variadic functions are not supported.
 func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModuleTranslation, error) {
 	pkgPath := pkg.Path
 	if pkgPath == "" && pkg.Types != nil {
@@ -80,7 +95,7 @@ func TranslateGoModule(pkg GoPackage, src []byte, opt GoModuleOptions) (*GoModul
 		return nil, fmt.Errorf("%s: parse %s: %w", pkgPath, asmName, err)
 	}
 	if opt.KeepFunc != nil {
-		keep := file.Funcs[:0]
+		keep := make([]Func, 0, len(file.Funcs))
 		for _, fn := range file.Funcs {
 			resolved := resolve(goStripABISuffix(fn.Sym))
 			if opt.KeepFunc(fn.Sym, resolved) {
@@ -237,7 +252,7 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 		callerResolved := resolve(goStripABISuffix(fn.Sym))
 		callerSig, hasCallerSig := sigs[callerResolved]
 		for _, ins := range fn.Instrs {
-			op := strings.ToUpper(string(ins.Op))
+			op := string(ins.Op)
 			tailJump := false
 			switch op {
 			case "JMP", "B":
@@ -268,6 +283,9 @@ func goSigsForAsmFile(pkg GoPackage, file *File, resolve func(sym string) string
 			if !tailJump || !hasCallerSig {
 				continue
 			}
+			// Best-effort fallback for helper<> tail-jumps where the callee is an
+			// internal asm label with no Go declaration. Callers can override this
+			// via ManualSig when the inferred signature is not identical.
 			fs := callerSig
 			fs.Name = targetResolved
 			sigs[targetResolved] = fs
@@ -363,24 +381,18 @@ func goLinknameRemoteToLocal(files []*ast.File) map[string]string {
 				if c == nil {
 					continue
 				}
-				for _, line := range strings.Split(c.Text, "\n") {
-					line = strings.TrimSpace(line)
-					line = strings.TrimPrefix(line, "//")
-					line = strings.TrimPrefix(line, "/*")
-					line = strings.TrimSuffix(line, "*/")
-					line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
-					if !strings.HasPrefix(line, "go:linkname") {
-						continue
-					}
-					parts := strings.Fields(line)
-					if len(parts) < 3 || parts[0] != "go:linkname" {
-						continue
-					}
-					local := parts[1]
-					remote := strings.ReplaceAll(parts[2], "∕", "/")
-					remote = strings.ReplaceAll(remote, "·", ".")
-					m[remote] = local
+				line := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+				if !strings.HasPrefix(line, "go:linkname") {
+					continue
 				}
+				parts := strings.Fields(line)
+				if len(parts) < 3 || parts[0] != "go:linkname" {
+					continue
+				}
+				local := parts[1]
+				remote := strings.ReplaceAll(parts[2], "∕", "/")
+				remote = strings.ReplaceAll(remote, "·", ".")
+				m[remote] = local
 			}
 		}
 	}
@@ -408,9 +420,6 @@ func goExpandConsts(src []byte, pkgTypes *types.Package, imports map[string]*typ
 		}
 		if i64, ok := constant.Int64Val(c.Val()); ok {
 			return fmt.Sprintf("%d", i64), true
-		}
-		if u64, ok := constant.Uint64Val(c.Val()); ok && u64 <= uint64(^uint64(0)>>1) {
-			return fmt.Sprintf("%d", int64(u64)), true
 		}
 		return "", false
 	}
@@ -563,7 +572,7 @@ func goFramePartsForType(t types.Type, goarch string) ([]goFramePart, bool) {
 	if word == 4 {
 		wordTy = I32
 	}
-	switch u := types.Unalias(t).(type) {
+	switch u := t.Underlying().(type) {
 	case *types.Basic:
 		if u.Kind() == types.String {
 			return []goFramePart{{Offset: 0, Type: Ptr, Field: 0}, {Offset: word, Type: wordTy, Field: 1}}, true
@@ -578,7 +587,7 @@ func goFramePartsForType(t types.Type, goarch string) ([]goFramePart, bool) {
 
 func goWordSize(goarch string) int {
 	switch goarch {
-	case "amd64", "arm64", "loong64", "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x":
+	case "amd64", "arm64":
 		return 8
 	default:
 		return 4

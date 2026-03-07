@@ -29,7 +29,7 @@ func TestStdlibInternalBytealg_ARM64_Compile(t *testing.T) {
 	}
 
 	resolve := func(sym string) string {
-		sym = stripABISuffix(sym)
+		sym = goStripABISuffix(sym)
 		if strings.HasPrefix(sym, "runtime·") {
 			sym = strings.ReplaceAll(sym, "∕", "/")
 			return strings.ReplaceAll(sym, "·", ".")
@@ -121,7 +121,7 @@ func stdlibBytealgARM64Sigs(goroot string) map[string]map[string]FuncSig {
 		if err != nil || len(src) == 0 || !containsTextSymbol(string(src), sym) {
 			return
 		}
-		resolved := stripABISuffix(sym)
+		resolved := goStripABISuffix(sym)
 		resolved = strings.TrimPrefix(resolved, "·")
 		if strings.HasPrefix(resolved, "runtime·") {
 			resolved = strings.ReplaceAll(strings.TrimPrefix(resolved, "runtime·"), "∕", "/")
@@ -171,14 +171,14 @@ func sigWithClassicFrame(name string, args []LLVMType, ret LLVMType) FuncSig {
 	sig := FuncSig{Name: name, Args: args, Ret: ret}
 	var off int64
 	for i, arg := range args {
-		off = alignOffset(off, typeAlign(arg))
+		off = goAlignOff(off, typeAlign(arg))
 		for _, slot := range frameSlotsForType(arg, off, i, false) {
 			sig.Frame.Params = append(sig.Frame.Params, slot)
 		}
 		off += typeSize(arg)
 	}
 	if ret != Void {
-		off = alignOffset(off, typeAlign(ret))
+		off = goAlignOff(off, typeAlign(ret))
 		for _, slot := range frameSlotsForType(ret, off, 0, true) {
 			sig.Frame.Results = append(sig.Frame.Results, slot)
 		}
@@ -240,24 +240,6 @@ func typeAlign(ty LLVMType) int64 {
 	default:
 		return 8
 	}
-}
-
-func alignOffset(off, align int64) int64 {
-	if align <= 1 {
-		return off
-	}
-	m := off % align
-	if m == 0 {
-		return off
-	}
-	return off + (align - m)
-}
-
-func stripABISuffix(sym string) string {
-	if i := strings.LastIndex(sym, "<ABI"); i >= 0 && strings.HasSuffix(sym, ">") {
-		return sym[:i]
-	}
-	return strings.TrimSuffix(sym, "<>")
 }
 
 func containsTextSymbol(src, sym string) bool {
