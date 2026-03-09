@@ -162,7 +162,7 @@ func preprocess(src string) (string, error) {
 		}
 
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "#include") {
+		if strings.HasPrefix(trim, "#include") || strings.HasPrefix(trim, "#undef") {
 			// Ignore includes for now. We don't need textflag.h values because
 			// we treat flags as opaque in TEXT.
 			continue
@@ -532,10 +532,16 @@ func parseMacroDefine(rest string) (name string, params []string, body string, e
 }
 
 func parseMacroCall(line, name string, wantArgs int) ([]string, bool) {
-	if !strings.HasPrefix(line, name+"(") {
+	if !strings.HasPrefix(line, name) {
 		return nil, false
 	}
 	start := len(name)
+	for start < len(line) && (line[start] == ' ' || line[start] == '	') {
+		start++
+	}
+	if start >= len(line) || line[start] != '(' {
+		return nil, false
+	}
 	j := start
 	depth := 0
 	for ; j < len(line); j++ {
@@ -581,7 +587,7 @@ func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
 	changed := false
 	i := 0
 	for i < len(line) {
-		j := strings.Index(line[i:], name+"(")
+		j := strings.Index(line[i:], name)
 		if j < 0 {
 			out.WriteString(line[i:])
 			break
@@ -594,6 +600,9 @@ func expandInlineMacroCalls(line, name string, m ppMacro) (string, bool) {
 			continue
 		}
 		open := j + len(name)
+		for open < len(line) && (line[open] == ' ' || line[open] == '	') {
+			open++
+		}
 		if open >= len(line) || line[open] != '(' {
 			out.WriteString(line[i : j+1])
 			i = j + 1
