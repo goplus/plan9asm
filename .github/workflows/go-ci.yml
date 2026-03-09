@@ -42,7 +42,7 @@ jobs:
       - name: Install LLVM 19
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          wget -qO /etc/apt/trusted.gpg.d/llvm-snapshot.asc https://apt.llvm.org/llvm-snapshot.gpg.key
           sudo apt-get update
           sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
@@ -70,7 +70,6 @@ jobs:
           - '1.23.x'
           - '1.24.x'
           - '1.25.x'
-          - '1.26.x'
 
     steps:
       - name: Checkout
@@ -80,7 +79,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          wget -qO /etc/apt/trusted.gpg.d/llvm-snapshot.asc https://apt.llvm.org/llvm-snapshot.gpg.key
           sudo apt-get update
           sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
@@ -129,7 +128,7 @@ jobs:
       - name: Install LLVM 19
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          wget -qO /etc/apt/trusted.gpg.d/llvm-snapshot.asc https://apt.llvm.org/llvm-snapshot.gpg.key
           sudo apt-get update
           sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
@@ -160,7 +159,7 @@ jobs:
       - name: Install LLVM 19
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          wget -qO /etc/apt/trusted.gpg.d/llvm-snapshot.asc https://apt.llvm.org/llvm-snapshot.gpg.key
           sudo apt-get update
           sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
@@ -187,7 +186,7 @@ jobs:
       - name: Install LLVM 19
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          wget -qO /etc/apt/trusted.gpg.d/llvm-snapshot.asc https://apt.llvm.org/llvm-snapshot.gpg.key
           sudo apt-get update
           sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
