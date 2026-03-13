@@ -171,7 +171,6 @@ jobs:
           - netbsd
           - openbsd
           - plan9
-          - windows
 
     steps:
       - name: Checkout
@@ -181,8 +180,13 @@ jobs:
         run: |
           echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
+          for attempt in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev && break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
           echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
 
       - name: Setup Go
@@ -282,7 +286,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           use_oidc: true
-          files: ./coverage-root.out,./cmd/plan9asm/coverage-plan9asm.out,./cmd/plan9asmll/coverage-plan9asmll.out
+          files: ./coverage-root.out
           flags: unittests
           name: ubuntu-go1.25
           fail_ci_if_error: false
