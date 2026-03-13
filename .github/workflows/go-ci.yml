@@ -56,6 +56,14 @@ jobs:
       - name: Go build
         run: go build ./...
 
+      - name: Go build (cmd/plan9asm)
+        run: go build ./...
+        working-directory: cmd/plan9asm
+
+      - name: Go build (cmd/plan9asmll)
+        run: go build ./...
+        working-directory: cmd/plan9asmll
+
   stdlib-corpus:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -143,6 +151,68 @@ jobs:
       - name: Go test
         run: go test ./...
 
+      - name: Go test (cmd/plan9asm)
+        run: go test ./...
+        working-directory: cmd/plan9asm
+
+      - name: Go test (cmd/plan9asmll)
+        run: go test ./...
+        working-directory: cmd/plan9asmll
+
+  arm-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos:
+          - android
+          - freebsd
+          - linux
+          - netbsd
+          - openbsd
+          - plan9
+          - windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install LLVM 19
+        run: |
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev lld-19 libunwind-19-dev libc++-19-dev
+          echo "PATH=/usr/lib/llvm-19/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: ARM scan gate
+        run: |
+          go run ./cmd/plan9asmscan -goos="${{ matrix.goos }}" -goarch=arm -repo-root . -format json -out scan.json
+          python3 - "$PWD/scan.json" "${{ matrix.goos }}/arm" <<'PY'
+          import json
+          import sys
+
+          path, target = sys.argv[1], sys.argv[2]
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          unsupported = data.get("unsupported", [])
+          parse_errs = data.get("parse_errs") or []
+          print(f"scan {target}: packages={data['std_pkgs_with_sfile']} files={data['asm_files']} unsupported={len(unsupported)} parse_errs={len(parse_errs)}")
+          if unsupported:
+              top = ", ".join(f"{item['op']}({item['count']})" for item in unsupported[:12])
+              raise SystemExit(f"{target}: unsupported ops remain: {top}")
+          if parse_errs:
+              top = ", ".join(f"{item['File']}: {item['Err']}" for item in parse_errs[:8])
+              raise SystemExit(f"{target}: parse errors remain: {top}")
+          PY
+
   race:
     runs-on: ubuntu-latest
 
@@ -193,14 +263,26 @@ jobs:
 
       - name: Go test with coverage
         run: |
-          go test ./... -coverprofile=coverage.out
-          go tool cover -func=coverage.out | tail -n 1
+          go test ./... -coverprofile=coverage-root.out
+          go tool cover -func=coverage-root.out | tail -n 1
+
+      - name: Go test with coverage (cmd/plan9asm)
+        run: |
+          go test ./... -coverprofile=coverage-plan9asm.out
+          go tool cover -func=coverage-plan9asm.out | tail -n 1
+        working-directory: cmd/plan9asm
+
+      - name: Go test with coverage (cmd/plan9asmll)
+        run: |
+          go test ./... -coverprofile=coverage-plan9asmll.out
+          go tool cover -func=coverage-plan9asmll.out | tail -n 1
+        working-directory: cmd/plan9asmll
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           use_oidc: true
-          files: ./coverage.out
+          files: ./coverage-root.out,./cmd/plan9asm/coverage-plan9asm.out,./cmd/plan9asmll/coverage-plan9asmll.out
           flags: unittests
           name: ubuntu-go1.25
           fail_ci_if_error: false
