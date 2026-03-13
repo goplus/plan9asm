@@ -67,6 +67,10 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, fmt.Errorf("missing return type for %q", name)
 		}
+		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+			mod.Dispose()
+			return llvm.Module{}, directUnsupportedf("arm CFG lowering required for %s", name)
+		}
 		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm64 CFG lowering required for %s", name)

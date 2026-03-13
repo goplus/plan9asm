@@ -145,6 +145,13 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Attrs == "" {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeatures(file.Arch, *fn))
 		}
+		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+			if err := translateFuncARM(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+				return "", fmt.Errorf("%s: %v", name, err)
+			}
+			b.WriteString("\n")
+			continue
+		}
 		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
 			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
 				return "", fmt.Errorf("%s: %v", name, err)
@@ -958,11 +965,11 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 					return fmt.Errorf("%s dst must be register: %s", ins.Op, ins.Raw)
 				}
 				var err error
-				lhs, err = valueOf(ins.Args[0])
+				lhs, err = valueOf(ins.Args[1])
 				if err != nil {
 					return err
 				}
-				rhs, err = valueOf(ins.Args[1])
+				rhs, err = valueOf(ins.Args[0])
 				if err != nil {
 					return err
 				}
