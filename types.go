@@ -272,6 +272,17 @@ func parseImm(s string) (int64, bool) {
 		}
 		u, ok := parseImmExpr(v)
 		if !ok {
+			// Be permissive with symbolic immediates such as:
+			//   $(16 + callbackArgs__size)
+			// The lowering path may still reject them later, but parser/scan
+			// should not fail on unresolved assembler-time constants.
+			expr := strings.TrimSpace(v)
+			if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
+				inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expr, "("), ")"))
+				if strings.ContainsAny(inner, "+-*/%<>&|^ \t") {
+					return 0, true
+				}
+			}
 			return 0, false
 		}
 		return int64(u), true

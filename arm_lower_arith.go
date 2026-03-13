@@ -19,7 +19,7 @@ func (c *armCtx) lowerArith(op, cond string, setFlags bool, ins Instr) (ok bool,
 		return true, false, c.lowerARMMULLU(cond, ins)
 	case "MULA":
 		return true, false, c.lowerARMMULA(cond, ins)
-	case "MULAL":
+	case "MULAL", "MULALU":
 		return true, false, c.lowerARMMULAL(cond, ins)
 	case "MULAWT":
 		return true, false, c.lowerARMMULAWT(cond, ins)
