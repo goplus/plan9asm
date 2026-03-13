@@ -12,5 +12,7 @@ func TestParseARMSymbolicImmediateExpr(t *testing.T) {
 	}
 	if got := file.Funcs[0].Instrs[1].Args[0]; got.Kind != OpImm {
 		t.Fatalf("unexpected operand kind: %#v", got)
+	} else if got.ImmRaw == "" {
+		t.Fatalf("symbolic immediate should be marked unresolved: %#v", got)
 	}
 }

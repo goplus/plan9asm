@@ -67,6 +67,10 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, fmt.Errorf("missing return type for %q", name)
 		}
+		if err := validateResolvedImmediates(*fn); err != nil {
+			mod.Dispose()
+			return llvm.Module{}, directUnsupportedf("%s: %v", name, err)
+		}
 		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("arm CFG lowering required for %s", name)
@@ -251,6 +255,9 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 	valueOf := func(op Operand) (directValue, error) {
 		switch op.Kind {
 		case OpImm:
+			if op.ImmRaw != "" {
+				return directValue{}, directUnsupportedf("unresolved symbolic immediate %q", op.ImmRaw)
+			}
 			llty, _ := llvmTypeFromLLVMType(ctx, I64)
 			return directValue{typ: I64, val: llvm.ConstInt(llty, uint64(op.Imm), true)}, nil
 		case OpReg:

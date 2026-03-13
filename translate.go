@@ -142,6 +142,9 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Ret == "" {
 			return "", fmt.Errorf("missing return type for %q", name)
 		}
+		if err := validateResolvedImmediates(*fn); err != nil {
+			return "", fmt.Errorf("%s: %v", name, err)
+		}
 		if sig.Attrs == "" {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeatures(file.Arch, *fn))
 		}
@@ -173,6 +176,17 @@ func translateIRText(file *File, opt Options) (string, error) {
 	}
 	attrRegistry.emit(&b)
 	return b.String(), nil
+}
+
+func validateResolvedImmediates(fn Func) error {
+	for _, ins := range fn.Instrs {
+		for _, arg := range ins.Args {
+			if arg.Kind == OpImm && arg.ImmRaw != "" {
+				return fmt.Errorf("unresolved symbolic immediate %q", arg.ImmRaw)
+			}
+		}
+	}
+	return nil
 }
 
 func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {
@@ -654,6 +668,9 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	valueOf = func(op Operand) (ssaVal, error) {
 		switch op.Kind {
 		case OpImm:
+			if op.ImmRaw != "" {
+				return ssaVal{}, fmt.Errorf("unresolved symbolic immediate %q", op.ImmRaw)
+			}
 			// Default immediates to i64; MOVL will cast to i32 as needed.
 			return ssaVal{typ: I64, val: fmt.Sprintf("%d", op.Imm)}, nil
 		case OpReg:

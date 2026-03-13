@@ -121,6 +121,9 @@ func (c *armCtx) storeMem(mem MemRef, bits int, postInc bool, v32 string) error 
 func (c *armCtx) eval32(op Operand, postInc bool) (string, error) {
 	switch op.Kind {
 	case OpImm:
+		if op.ImmRaw != "" {
+			return "", fmt.Errorf("arm: unresolved symbolic immediate %q", op.ImmRaw)
+		}
 		return c.imm32(op.Imm), nil
 	case OpReg:
 		return c.loadReg(op.Reg)

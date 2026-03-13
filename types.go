@@ -168,8 +168,9 @@ const (
 type Operand struct {
 	Kind OperandKind
 
-	Imm int64 // OpImm
-	Reg Reg   // OpReg
+	Imm    int64  // OpImm
+	ImmRaw string // OpImm unresolved symbolic placeholder, including leading '$'
+	Reg    Reg    // OpReg
 	// OpRegShift
 	ShiftOp     ShiftOp
 	ShiftAmount int64
@@ -203,6 +204,9 @@ type MemRef struct {
 func (o Operand) String() string {
 	switch o.Kind {
 	case OpImm:
+		if o.ImmRaw != "" {
+			return o.ImmRaw
+		}
 		return fmt.Sprintf("$%d", o.Imm)
 	case OpReg:
 		return string(o.Reg)
@@ -274,20 +278,25 @@ func parseImm(s string) (int64, bool) {
 		if !ok {
 			// Be permissive with symbolic immediates such as:
 			//   $(16 + callbackArgs__size)
-			// The lowering path may still reject them later, but parser/scan
-			// should not fail on unresolved assembler-time constants.
-			expr := strings.TrimSpace(v)
-			if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
-				inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expr, "("), ")"))
-				if strings.ContainsAny(inner, "+-*/%<>&|^ \t") {
-					return 0, true
-				}
+			// Parser/scan should accept them, but lowering must reject them
+			// explicitly via Operand.ImmRaw instead of silently materializing 0.
+			if isSymbolicImmPlaceholder(s) {
+				return 0, true
 			}
 			return 0, false
 		}
 		return int64(u), true
 	}
 	return int64(u), true
+}
+
+func isSymbolicImmPlaceholder(s string) bool {
+	expr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "$"))
+	if !strings.HasPrefix(expr, "(") || !strings.HasSuffix(expr, ")") {
+		return false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expr, "("), ")"))
+	return strings.ContainsAny(inner, "+-*/%<>&|^ \t")
 }
 
 func parseImmExpr(v string) (uint64, bool) {
@@ -498,7 +507,11 @@ func parseOperand(s string) (Operand, error) {
 		return Operand{}, fmt.Errorf("empty operand")
 	}
 	if imm, ok := parseImm(s); ok {
-		return Operand{Kind: OpImm, Imm: imm}, nil
+		op := Operand{Kind: OpImm, Imm: imm}
+		if isSymbolicImmPlaceholder(s) {
+			op.ImmRaw = s
+		}
+		return op, nil
 	}
 	if name, off, ok := parseFPAddr(s); ok {
 		return Operand{Kind: OpFPAddr, FPName: name, FPOffset: off}, nil

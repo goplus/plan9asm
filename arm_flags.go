@@ -9,7 +9,24 @@ func (c *armCtx) storeFlag(slot string, v string) {
 	fmt.Fprintf(c.b, "  store i1 %s, ptr %s\n", v, slot)
 }
 
-func (c *armCtx) setFlagsSub(dst, src, res string) {
+func (c *armCtx) storeFlagCond(cond, slot, v string) error {
+	if cond == "" || strings.EqualFold(cond, "AL") {
+		c.storeFlag(slot, v)
+		return nil
+	}
+	cv, err := c.condValue(cond)
+	if err != nil {
+		return err
+	}
+	oldV := c.newTmp()
+	sel := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i1, ptr %s\n", oldV, slot)
+	fmt.Fprintf(c.b, "  %%%s = select i1 %s, i1 %s, i1 %%%s\n", sel, cv, v, oldV)
+	c.storeFlag(slot, "%"+sel)
+	return nil
+}
+
+func (c *armCtx) setFlagsSub(cond, dst, src, res string) error {
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
@@ -25,13 +42,19 @@ func (c *armCtx) setFlagsSub(dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
 	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, x1, x2)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
-	c.storeFlag(c.flagsZSlot, "%"+z)
-	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "%"+carry)
-	c.storeFlag(c.flagsVSlot, "%"+ov)
+	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
+		return err
+	}
+	if err := c.storeFlagCond(cond, c.flagsNSlot, "%"+n); err != nil {
+		return err
+	}
+	if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
+		return err
+	}
+	return c.storeFlagCond(cond, c.flagsVSlot, "%"+ov)
 }
 
-func (c *armCtx) setFlagsAdd(dst, src, res string) {
+func (c *armCtx) setFlagsAdd(cond, dst, src, res string) error {
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
@@ -49,22 +72,28 @@ func (c *armCtx) setFlagsAdd(dst, src, res string) {
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", x2, dst, res)
 	fmt.Fprintf(c.b, "  %%%s = and i32 %%%s, %%%s\n", x3, nx1, x2)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %%%s, 0\n", ov, x3)
-	c.storeFlag(c.flagsZSlot, "%"+z)
-	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "%"+carry)
-	c.storeFlag(c.flagsVSlot, "%"+ov)
+	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
+		return err
+	}
+	if err := c.storeFlagCond(cond, c.flagsNSlot, "%"+n); err != nil {
+		return err
+	}
+	if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
+		return err
+	}
+	return c.storeFlagCond(cond, c.flagsVSlot, "%"+ov)
 }
 
-func (c *armCtx) setFlagsLogic(res string) {
+func (c *armCtx) setFlagsLogic(cond, res string) error {
 	c.flagsWritten = true
 	z := c.newTmp()
 	n := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = icmp eq i32 %s, 0\n", z, res)
 	fmt.Fprintf(c.b, "  %%%s = icmp slt i32 %s, 0\n", n, res)
-	c.storeFlag(c.flagsZSlot, "%"+z)
-	c.storeFlag(c.flagsNSlot, "%"+n)
-	c.storeFlag(c.flagsCSlot, "false")
-	c.storeFlag(c.flagsVSlot, "false")
+	if err := c.storeFlagCond(cond, c.flagsZSlot, "%"+z); err != nil {
+		return err
+	}
+	return c.storeFlagCond(cond, c.flagsNSlot, "%"+n)
 }
 
 func (c *armCtx) condValue(cond string) (string, error) {
@@ -131,6 +160,14 @@ func (c *armCtx) condValue(cond string) (string, error) {
 		return or(z, xor(n, v)), nil
 	case "MI":
 		return n, nil
+	case "PL":
+		return not(n), nil
+	case "VS":
+		return v, nil
+	case "VC":
+		return not(v), nil
+	case "AL":
+		return "true", nil
 	default:
 		return "", fmt.Errorf("arm: unsupported condition %q", cond)
 	}

@@ -27,6 +27,7 @@ var armCondCodes = map[string]bool{
 	"LT": true,
 	"GT": true,
 	"LE": true,
+	"AL": true,
 }
 
 func armSplitBlocks(fn Func) []armBlock {

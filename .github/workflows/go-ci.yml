@@ -192,13 +192,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version: '1.26.1'
           cache: true
 
       - name: ARM scan gate
+        env:
+          TARGET_GOOS: ${{ matrix.goos }}
         run: |
-          go run ./cmd/plan9asmscan -goos="${{ matrix.goos }}" -goarch=arm -repo-root . -format json -out scan.json
-          python3 - "$PWD/scan.json" "${{ matrix.goos }}/arm" <<'PY'
+          go run ./cmd/plan9asmscan -goos="$TARGET_GOOS" -goarch=arm -repo-root . -format json -out scan.json
+          python3 - "$PWD/scan.json" "$TARGET_GOOS/arm" <<'PY'
           import json
           import sys
 

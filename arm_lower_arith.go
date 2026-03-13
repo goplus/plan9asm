@@ -8,9 +8,9 @@ import (
 func (c *armCtx) lowerArith(op, cond string, setFlags bool, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
 	case "ADD", "SUB", "AND", "ORR", "EOR", "RSB", "BIC":
-		return true, false, c.lowerARMALU(op, cond, ins)
+		return true, false, c.lowerARMALU(op, cond, setFlags, ins)
 	case "MVN":
-		return true, false, c.lowerARMMVN(cond, ins)
+		return true, false, c.lowerARMMVN(cond, setFlags, ins)
 	case "ADC", "SBC":
 		return true, false, c.lowerARMADCSBC(op, cond, setFlags, ins)
 	case "MUL", "MULU":
@@ -35,7 +35,7 @@ func (c *armCtx) lowerArith(op, cond string, setFlags bool, ins Instr) (ok bool,
 	return false, false, nil
 }
 
-func (c *armCtx) lowerARMALU(op, cond string, ins Instr) error {
+func (c *armCtx) lowerARMALU(op, cond string, setFlags bool, ins Instr) error {
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm %s expects 2 or 3 operands: %q", op, ins.Raw)
 	}
@@ -88,7 +88,24 @@ func (c *armCtx) lowerARMALU(op, cond string, ins Instr) error {
 		fmt.Fprintf(c.b, "  %%%s = xor i32 %s, -1\n", n, src)
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, %%%s\n", t, lhs, n)
 	}
-	return c.selectRegWrite(dst.Reg, cond, "%"+t)
+	if err := c.selectRegWrite(dst.Reg, cond, "%"+t); err != nil {
+		return err
+	}
+	if !setFlags {
+		return nil
+	}
+	switch op {
+	case "ADD":
+		return c.setFlagsAdd(cond, lhs, src, "%"+t)
+	case "SUB":
+		return c.setFlagsSub(cond, lhs, src, "%"+t)
+	case "RSB":
+		return c.setFlagsSub(cond, src, lhs, "%"+t)
+	case "AND", "ORR", "EOR", "BIC":
+		return c.setFlagsLogic(cond, "%"+t)
+	default:
+		return nil
+	}
 }
 
 func (c *armCtx) lowerARMCompare(op string, ins Instr) error {
@@ -107,21 +124,29 @@ func (c *armCtx) lowerARMCompare(op string, ins Instr) error {
 	switch op {
 	case "CMP":
 		fmt.Fprintf(c.b, "  %%%s = sub i32 %s, %s\n", res, lhs, src)
-		c.setFlagsSub(lhs, src, "%"+res)
+		if err := c.setFlagsSub("", lhs, src, "%"+res); err != nil {
+			return err
+		}
 	case "CMN":
 		fmt.Fprintf(c.b, "  %%%s = add i32 %s, %s\n", res, lhs, src)
-		c.setFlagsAdd(lhs, src, "%"+res)
+		if err := c.setFlagsAdd("", lhs, src, "%"+res); err != nil {
+			return err
+		}
 	case "TST":
 		fmt.Fprintf(c.b, "  %%%s = and i32 %s, %s\n", res, lhs, src)
-		c.setFlagsLogic("%" + res)
+		if err := c.setFlagsLogic("", "%"+res); err != nil {
+			return err
+		}
 	case "TEQ":
 		fmt.Fprintf(c.b, "  %%%s = xor i32 %s, %s\n", res, lhs, src)
-		c.setFlagsLogic("%" + res)
+		if err := c.setFlagsLogic("", "%"+res); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c *armCtx) lowerARMMVN(cond string, ins Instr) error {
+func (c *armCtx) lowerARMMVN(cond string, setFlags bool, ins Instr) error {
 	if len(ins.Args) != 2 && len(ins.Args) != 3 {
 		return fmt.Errorf("arm MVN expects 2 or 3 operands: %q", ins.Raw)
 	}
@@ -146,7 +171,13 @@ func (c *armCtx) lowerARMMVN(cond string, ins Instr) error {
 	}
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = xor i32 %s, -1\n", t, src)
-	return c.selectRegWrite(dst.Reg, cond, "%"+t)
+	if err := c.selectRegWrite(dst.Reg, cond, "%"+t); err != nil {
+		return err
+	}
+	if setFlags {
+		return c.setFlagsLogic(cond, "%"+t)
+	}
+	return nil
 }
 
 func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error {
@@ -222,8 +253,12 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", total1, l64, s64)
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", total2, total1, c64)
 			fmt.Fprintf(c.b, "  %%%s = icmp ugt i64 %%%s, 4294967295\n", carry, total2)
-			c.setFlagsAdd(lhs, src, "%"+res)
-			c.storeFlag(c.flagsCSlot, "%"+carry)
+			if err := c.setFlagsAdd(cond, lhs, src, "%"+res); err != nil {
+				return err
+			}
+			if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+carry); err != nil {
+				return err
+			}
 		} else {
 			l64 := c.newTmp()
 			s64 := c.newTmp()
@@ -235,10 +270,14 @@ func (c *armCtx) lowerARMADCSBC(op, cond string, setFlags bool, ins Instr) error
 			fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", b64, cin)
 			fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, %%%s\n", subtr, s64, b64)
 			fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, %%%s\n", borrow, l64, subtr)
-			c.setFlagsSub(lhs, src, "%"+res)
+			if err := c.setFlagsSub(cond, lhs, src, "%"+res); err != nil {
+				return err
+			}
 			nb := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", nb, borrow)
-			c.storeFlag(c.flagsCSlot, "%"+nb)
+			if err := c.storeFlagCond(cond, c.flagsCSlot, "%"+nb); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -474,6 +513,7 @@ func (c *armCtx) lowerARMMRC(ins Instr) error {
 		s := strings.ToLower(strings.TrimSpace(op.String()))
 		return strings.TrimPrefix(s, "$")
 	}
+	// LLVM inline asm refers to the single output register via $0.
 	asm := fmt.Sprintf("mrc p%s, %s, $0, %s, %s, %s", part(ins.Args[0]), part(ins.Args[1]), part(ins.Args[3]), part(ins.Args[4]), part(ins.Args[5]))
 	t := c.newTmp()
 	fmt.Fprintf(c.b, "  %%%s = call i32 asm sideeffect %q, %q()\n", t, asm, "=r,~{memory}")

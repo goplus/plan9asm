@@ -69,7 +69,7 @@ func (c *armCtx) lowerData(op, cond string, postInc bool, ins Instr) (ok bool, t
 }
 
 func (c *armCtx) selectRegWrite(dst Reg, cond string, newV string) error {
-	if cond == "" {
+	if cond == "" || strings.EqualFold(cond, "AL") {
 		return c.storeReg(dst, newV)
 	}
 	cv, err := c.condValue(cond)
@@ -88,10 +88,7 @@ func (c *armCtx) selectRegWrite(dst Reg, cond string, newV string) error {
 func (c *armCtx) storeARMValue(dst Operand, v string, bits int, cond string, postInc bool, raw string) error {
 	switch dst.Kind {
 	case OpReg:
-		if bits == 8 {
-			// ARM register file holds full words; loads already extended to i32.
-			return c.selectRegWrite(dst.Reg, cond, v)
-		}
+		// ARM register file holds full words; loads already extended to i32.
 		return c.selectRegWrite(dst.Reg, cond, v)
 	case OpMem:
 		if cond != "" {
