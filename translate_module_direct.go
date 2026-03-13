@@ -67,7 +67,7 @@ func translateModuleDirect(file *File, opt Options) (llvm.Module, error) {
 			mod.Dispose()
 			return llvm.Module{}, fmt.Errorf("missing return type for %q", name)
 		}
-		if err := validateResolvedImmediates(*fn); err != nil {
+		if err := validateResolvedImmediates(file.Arch, *fn); err != nil {
 			mod.Dispose()
 			return llvm.Module{}, directUnsupportedf("%s: %v", name, err)
 		}

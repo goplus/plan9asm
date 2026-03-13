@@ -142,7 +142,7 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Ret == "" {
 			return "", fmt.Errorf("missing return type for %q", name)
 		}
-		if err := validateResolvedImmediates(*fn); err != nil {
+		if err := validateResolvedImmediates(file.Arch, *fn); err != nil {
 			return "", fmt.Errorf("%s: %v", name, err)
 		}
 		if sig.Attrs == "" {
@@ -178,7 +178,10 @@ func translateIRText(file *File, opt Options) (string, error) {
 	return b.String(), nil
 }
 
-func validateResolvedImmediates(fn Func) error {
+func validateResolvedImmediates(arch Arch, fn Func) error {
+	if arch != ArchARM {
+		return nil
+	}
 	for _, ins := range fn.Instrs {
 		for _, arg := range ins.Args {
 			if arg.Kind == OpImm && arg.ImmRaw != "" {
