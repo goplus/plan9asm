@@ -148,11 +148,16 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 func listStdPackages(goos, goarch string) ([]pkgJSON, error) {
 	cmd := exec.Command("go", "list", "-json", "std")
 	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
 		"GOOS="+goos,
 		"GOARCH="+goarch,
 	)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return nil, fmt.Errorf("go list -json std: %w: %s", err, msg)
+		}
 		return nil, fmt.Errorf("go list -json std: %w", err)
 	}
 
