@@ -68,6 +68,10 @@ func (c *armCtx) loadMem(mem MemRef, bits int, postInc bool, signed bool) (strin
 
 	var out string
 	switch bits {
+	case 64:
+		t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", t, ptr)
+		out = "%" + t
 	case 32:
 		t := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s\n", t, ptr)
@@ -100,6 +104,8 @@ func (c *armCtx) storeMem(mem MemRef, bits int, postInc bool, v32 string) error 
 	fmt.Fprintf(c.b, "  %%%s = inttoptr i32 %s to ptr\n", pt, addr)
 	ptr := "%" + pt
 	switch bits {
+	case 64:
+		fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v32, ptr)
 	case 32:
 		fmt.Fprintf(c.b, "  store i32 %s, ptr %s\n", v32, ptr)
 	case 8:

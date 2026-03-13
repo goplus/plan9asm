@@ -10,6 +10,25 @@ type armBlock struct {
 	instrs []Instr
 }
 
+var armCondCodes = map[string]bool{
+	"EQ": true,
+	"NE": true,
+	"CS": true,
+	"HS": true,
+	"CC": true,
+	"LO": true,
+	"MI": true,
+	"PL": true,
+	"VS": true,
+	"VC": true,
+	"HI": true,
+	"LS": true,
+	"GE": true,
+	"LT": true,
+	"GT": true,
+	"LE": true,
+}
+
 func armSplitBlocks(fn Func) []armBlock {
 	blocks := []armBlock{{name: "entry"}}
 	cur := 0
@@ -25,7 +44,7 @@ func armSplitBlocks(fn Func) []armBlock {
 		if ins.Op == OpRET {
 			return true
 		}
-		baseOp, cond, _ := armDecodeOp(strings.ToUpper(string(ins.Op)))
+		baseOp, cond, _, _ := armDecodeOp(strings.ToUpper(string(ins.Op)))
 		switch baseOp {
 		case "B", "JMP":
 			return true
@@ -74,10 +93,10 @@ func armBranchTarget(op Operand) (string, bool) {
 	}
 }
 
-func armDecodeOp(raw string) (base string, cond string, postInc bool) {
+func armDecodeOp(raw string) (base string, cond string, postInc bool, setFlags bool) {
 	base = strings.ToUpper(strings.TrimSpace(raw))
 	if base == "" {
-		return "", "", false
+		return "", "", false, false
 	}
 	parts := strings.Split(base, ".")
 	base = parts[0]
@@ -85,10 +104,14 @@ func armDecodeOp(raw string) (base string, cond string, postInc bool) {
 		switch p {
 		case "P":
 			postInc = true
+		case "S":
+			setFlags = true
 		case "":
 		default:
-			cond = p
+			if armCondCodes[p] {
+				cond = p
+			}
 		}
 	}
-	return base, cond, postInc
+	return base, cond, postInc, setFlags
 }

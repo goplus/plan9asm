@@ -75,19 +75,34 @@ func (c *armCtx) lowerBlocks() error {
 
 func (c *armCtx) lowerInstr(bi int, ins Instr, emitBr armEmitBr, emitCondBr armEmitCondBr) (bool, error) {
 	rawOp := strings.ToUpper(string(ins.Op))
-	baseOp, cond, postInc := armDecodeOp(rawOp)
+	baseOp, cond, postInc, setFlags := armDecodeOp(rawOp)
 	switch baseOp {
 	case string(OpTEXT), string(OpBYTE):
 		return false, nil
 	case string(OpRET):
 		return true, c.lowerRET()
+	case "UNDEF":
+		c.b.WriteString("  call void asm sideeffect \"udf #0\", \"~{memory}\"()\n")
+		c.b.WriteString("  unreachable\n")
+		return true, nil
+	case "MOVM":
+		if ok, term, err := c.lowerMOVM(rawOp, ins); ok {
+			return term, err
+		}
+		return false, fmt.Errorf("arm: unsupported instruction %s", ins.Op)
 	case "PCDATA", "FUNCDATA", "NO_LOCAL_POINTERS", "WORD", "NOP", "DMB", "#IFDEF", "#ELSE", "#ENDIF":
 		return false, nil
 	}
 	if ok, term, err := c.lowerData(baseOp, cond, postInc, ins); ok {
 		return term, err
 	}
-	if ok, term, err := c.lowerArith(baseOp, cond, ins); ok {
+	if ok, term, err := c.lowerArith(baseOp, cond, setFlags, ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerAtomic(baseOp, ins); ok {
+		return term, err
+	}
+	if ok, term, err := c.lowerSyscall(baseOp, ins); ok {
 		return term, err
 	}
 	if ok, term, err := c.lowerBranch(bi, baseOp, cond, ins, emitBr, emitCondBr); ok {

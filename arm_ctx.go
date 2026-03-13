@@ -17,14 +17,21 @@ type armCtx struct {
 
 	blocks []armBlock
 
-	usedRegs map[Reg]bool
-	regSlot  map[Reg]string
+	usedRegs  map[Reg]bool
+	regSlot   map[Reg]string
+	usedFRegs map[Reg]bool
+	fRegSlot  map[Reg]string
 
 	flagsNSlot   string
 	flagsZSlot   string
 	flagsCSlot   string
 	flagsVSlot   string
 	flagsWritten bool
+
+	exclusiveValidSlot string
+	exclusivePtrSlot   string
+	exclusiveSizeSlot  string
+	exclusiveValueSlot string
 
 	fpParams       map[int64]FrameSlot
 	fpResults      []FrameSlot
@@ -44,6 +51,8 @@ func newARMCtx(b *strings.Builder, fn Func, sig FuncSig, resolve func(string) st
 		blocks:         armSplitBlocks(fn),
 		usedRegs:       map[Reg]bool{},
 		regSlot:        map[Reg]string{},
+		usedFRegs:      map[Reg]bool{},
+		fRegSlot:       map[Reg]string{},
 		fpParams:       map[int64]FrameSlot{},
 		fpResAllocaOff: map[int64]string{},
 		fpResAllocaIdx: map[int]string{},
@@ -74,8 +83,16 @@ func (c *armCtx) slotName(r Reg) string {
 }
 
 func (c *armCtx) scanUsedRegs() {
+	isFReg := func(r Reg) bool {
+		return strings.HasPrefix(string(r), "F")
+	}
 	markReg := func(r Reg) {
-		if r != "" {
+		if r == "" {
+			return
+		}
+		if isFReg(r) {
+			c.usedFRegs[r] = true
+		} else {
 			c.usedRegs[r] = true
 		}
 	}
@@ -131,6 +148,18 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 		fmt.Fprintf(c.b, "  %s = alloca i32\n", slot)
 		fmt.Fprintf(c.b, "  store i32 0, ptr %s\n", slot)
 	}
+	fregs := make([]string, 0, len(c.usedFRegs))
+	for r := range c.usedFRegs {
+		fregs = append(fregs, string(r))
+	}
+	sort.Strings(fregs)
+	for _, rs := range fregs {
+		r := Reg(rs)
+		slot := "%" + armLLVMBlockName("freg_"+string(r))
+		c.fRegSlot[r] = slot
+		fmt.Fprintf(c.b, "  %s = alloca i64\n", slot)
+		fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", slot)
+	}
 
 	c.flagsNSlot = "%flags_n"
 	c.flagsZSlot = "%flags_z"
@@ -144,6 +173,19 @@ func (c *armCtx) emitEntryAllocasAndArgInit() error {
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsCSlot)
 	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.flagsVSlot)
 	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsVSlot)
+
+	c.exclusiveValidSlot = "%exclusive_valid"
+	c.exclusivePtrSlot = "%exclusive_ptr"
+	c.exclusiveSizeSlot = "%exclusive_size"
+	c.exclusiveValueSlot = "%exclusive_value"
+	fmt.Fprintf(c.b, "  %s = alloca i1\n", c.exclusiveValidSlot)
+	fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.exclusiveValidSlot)
+	fmt.Fprintf(c.b, "  %s = alloca ptr\n", c.exclusivePtrSlot)
+	fmt.Fprintf(c.b, "  store ptr null, ptr %s\n", c.exclusivePtrSlot)
+	fmt.Fprintf(c.b, "  %s = alloca i8\n", c.exclusiveSizeSlot)
+	fmt.Fprintf(c.b, "  store i8 0, ptr %s\n", c.exclusiveSizeSlot)
+	fmt.Fprintf(c.b, "  %s = alloca i64\n", c.exclusiveValueSlot)
+	fmt.Fprintf(c.b, "  store i64 0, ptr %s\n", c.exclusiveValueSlot)
 
 	for _, r := range c.fpResults {
 		name := fmt.Sprintf("%%fp_ret_%d", r.Index)
@@ -217,6 +259,25 @@ func (c *armCtx) storeReg(r Reg, v string) error {
 		return fmt.Errorf("arm: unknown reg %s", r)
 	}
 	fmt.Fprintf(c.b, "  store i32 %s, ptr %s\n", v, slot)
+	return nil
+}
+
+func (c *armCtx) loadFReg(r Reg) (string, error) {
+	slot, ok := c.fRegSlot[r]
+	if !ok {
+		return "", fmt.Errorf("arm: unknown freg %s", r)
+	}
+	t := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s\n", t, slot)
+	return "%" + t, nil
+}
+
+func (c *armCtx) storeFReg(r Reg, v string) error {
+	slot, ok := c.fRegSlot[r]
+	if !ok {
+		return fmt.Errorf("arm: unknown freg %s", r)
+	}
+	fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, slot)
 	return nil
 }
 
