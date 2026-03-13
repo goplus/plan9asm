@@ -77,15 +77,15 @@ var (
 func main() {
 	var (
 		goos     = flag.String("goos", runtime.GOOS, "target GOOS")
-		goarch   = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64)")
+		goarch   = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/arm)")
 		out      = flag.String("out", "", "write report to file (default stdout)")
 		format   = flag.String("format", "md", "output format: md|json")
 		repoRoot = flag.String("repo-root", ".", "llgo repository root for extracting supported ops")
 	)
 	flag.Parse()
 
-	if *goarch != "amd64" && *goarch != "arm64" {
-		fatalf("unsupported -goarch %q (expect amd64/arm64)", *goarch)
+	if *goarch != "amd64" && *goarch != "arm64" && *goarch != "arm" {
+		fatalf("unsupported -goarch %q (expect amd64/arm64/arm)", *goarch)
 	}
 	arch, err := toPlan9Arch(*goarch)
 	if err != nil {
@@ -136,6 +136,8 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 	switch goarch {
 	case "amd64":
 		return plan9asm.ArchAMD64, nil
+	case "arm":
+		return plan9asm.ArchARM, nil
 	case "arm64":
 		return plan9asm.ArchARM64, nil
 	default:

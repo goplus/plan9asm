@@ -135,6 +135,16 @@ func translateFuncLinearModule(mod llvm.Module, arch Arch, fn Func, sig FuncSig)
 	}
 
 	switch arch {
+	case ArchARM:
+		if len(sig.ArgRegs) > 0 {
+			for i := 0; i < len(sig.Args) && i < len(sig.ArgRegs); i++ {
+				setArgReg(sig.ArgRegs[i], i)
+			}
+		} else {
+			for i := 0; i < len(sig.Args) && i < 4; i++ {
+				setArgReg(Reg(fmt.Sprintf("R%d", i)), i)
+			}
+		}
 	case ArchARM64:
 		if len(sig.ArgRegs) > 0 {
 			for i := 0; i < len(sig.Args) && i < len(sig.ArgRegs); i++ {

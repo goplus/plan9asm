@@ -86,7 +86,7 @@ type compileConfig struct {
 func main() {
 	var (
 		goos       = flag.String("goos", runtime.GOOS, "target GOOS")
-		goarch     = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/386)")
+		goarch     = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/arm/386)")
 		targets    = flag.String("targets", "", "comma-separated GOOS/GOARCH list (e.g. linux/amd64,windows/arm64)")
 		allTargets = flag.Bool("all-targets", false, "run matrix: darwin/{amd64,arm64} linux/{amd64,arm64,386} windows/{amd64,arm64,386}")
 		patterns   = flag.String("patterns", "std", "comma-separated package patterns")
@@ -527,6 +527,8 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 	switch goarch {
 	case "amd64", "386":
 		return plan9asm.ArchAMD64, nil
+	case "arm":
+		return plan9asm.ArchARM, nil
 	case "arm64":
 		return plan9asm.ArchARM64, nil
 	default:

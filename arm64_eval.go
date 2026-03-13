@@ -142,11 +142,17 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if op.ShiftReg != "" {
+			return "", fmt.Errorf("arm64: register-based shifts not supported: %s", op)
+		}
 		t := c.newTmp()
-		if op.ShiftRight {
+		switch op.ShiftOp {
+		case ShiftRight:
 			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", t, v, op.ShiftAmount)
-		} else {
+		case ShiftLeft:
 			fmt.Fprintf(c.b, "  %%%s = shl i64 %s, %d\n", t, v, op.ShiftAmount)
+		default:
+			return "", fmt.Errorf("arm64: unsupported shift op %q", op.ShiftOp)
 		}
 		return "%" + t, nil
 	case OpFP:

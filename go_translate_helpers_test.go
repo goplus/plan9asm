@@ -44,6 +44,9 @@ func TestGoHelperArchTupleAndSymParsing(t *testing.T) {
 	if got, err := goArchFor("amd64"); err != nil || got != ArchAMD64 {
 		t.Fatalf("goArchFor amd64 = (%q, %v), want %q", got, err, ArchAMD64)
 	}
+	if got, err := goArchFor("arm"); err != nil || got != ArchARM {
+		t.Fatalf("goArchFor arm = (%q, %v), want %q", got, err, ArchARM)
+	}
 	if got, err := goArchFor("arm64"); err != nil || got != ArchARM64 {
 		t.Fatalf("goArchFor arm64 = (%q, %v), want %q", got, err, ArchARM64)
 	}

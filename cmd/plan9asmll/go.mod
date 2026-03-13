@@ -3,7 +3,7 @@ module github.com/goplus/plan9asm/cmd/plan9asmll
 go 1.21
 
 require (
-	github.com/goplus/llvm v0.8.5
+	github.com/goplus/llvm v0.8.6
 	github.com/goplus/plan9asm v0.0.0
 	golang.org/x/tools v0.24.0
 )

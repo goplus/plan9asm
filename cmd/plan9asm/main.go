@@ -82,7 +82,7 @@ func runList(args []string) error {
 		goarch string
 	)
 	fs.StringVar(&goos, "goos", runtime.GOOS, "target GOOS")
-	fs.StringVar(&goarch, "goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/386)")
+	fs.StringVar(&goarch, "goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/arm/386)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func runTranspile(args []string) error {
 	fs.BoolVar(&annotate, "annotate", true, "emit source asm lines as IR comments")
 	fs.StringVar(&inFile, "i", "", "Plan9 asm .s file path")
 	fs.StringVar(&outFile, "o", "", "output .ll file path")
-	fs.StringVar(&goarch, "goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/386)")
+	fs.StringVar(&goarch, "goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/arm/386)")
 	fs.StringVar(&goos, "goos", runtime.GOOS, "target GOOS")
 	fs.StringVar(&metaFile, "meta", "", "optional output metadata json path")
 	fs.StringVar(&patterns, "patterns", "", "deprecated comma-separated package patterns")
@@ -413,10 +413,12 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 	switch goarch {
 	case "amd64", "386":
 		return plan9asm.ArchAMD64, nil
+	case "arm":
+		return plan9asm.ArchARM, nil
 	case "arm64":
 		return plan9asm.ArchARM64, nil
 	default:
-		return "", fmt.Errorf("unsupported -goarch %q (expect amd64/arm64/386)", goarch)
+		return "", fmt.Errorf("unsupported -goarch %q (expect amd64/arm64/arm/386)", goarch)
 	}
 }
 
