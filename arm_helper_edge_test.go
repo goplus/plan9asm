@@ -1,9 +1,12 @@
 package plan9asm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+var errTestSentinel = errors.New("sentinel")
 
 func newARMCtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[string]FuncSig) (*armCtx, *strings.Builder) {
 	t.Helper()
@@ -286,5 +289,245 @@ func TestARMBranchAndSyscallExtraEdges(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
 		}
+	}
+}
+
+func TestARMBranchExactErrorCoverage(t *testing.T) {
+	mk := func(ret LLVMType) *armCtx {
+		c, _ := newARMCtxForTest(t, FuncSig{Name: "example.branch_exact", Ret: ret}, map[string]FuncSig{
+			"example.voidsink": {Name: "example.voidsink", Ret: Void},
+			"example.badarg":   {Name: "example.badarg", Args: []LLVMType{LLVMType("vec")}, Ret: Void},
+		})
+		c.blocks = []armBlock{{name: "entry"}, {name: "fall"}}
+		return c
+	}
+	emitBr := func(string) {}
+	errCond := func(string, string, string) error { return errTestSentinel }
+
+	c := mk(Void)
+	delete(c.regSlot, Reg("R0"))
+	if _, _, err := c.lowerBranch(0, "CALL", "", Instr{Raw: "CALL R0", Args: []Operand{{Kind: OpReg, Reg: "R0"}}}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(CALL reg load error) unexpectedly succeeded")
+	}
+
+	c = mk(Void)
+	delete(c.regSlot, Reg("R1"))
+	if _, _, err := c.lowerBranch(0, "CALL", "", Instr{Raw: "CALL (R1)", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: "R1"}}}}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(CALL mem addr error) unexpectedly succeeded")
+	}
+
+	c = mk(Void)
+	if _, _, err := c.lowerBranch(0, "B", "", Instr{Raw: "B", Args: nil}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(B missing arg) unexpectedly succeeded")
+	}
+	if _, _, err := c.lowerBranch(0, "B", "EQ", Instr{Raw: "B.EQ R0", Args: []Operand{{Kind: OpReg, Reg: "R0"}}}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(B.EQ bad target) unexpectedly succeeded")
+	}
+	if _, _, err := c.lowerBranch(0, "B", "EQ", Instr{Raw: "B.EQ done", Args: []Operand{{Kind: OpIdent, Ident: "done"}}}, emitBr, errCond); err == nil {
+		t.Fatalf("lowerBranch(B.EQ emit error) unexpectedly succeeded")
+	}
+	if _, _, err := c.lowerBranch(0, "B", "", Instr{Raw: "B $1", Args: []Operand{{Kind: OpImm, Imm: 1}}}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(B bad target) unexpectedly succeeded")
+	}
+	if _, _, err := c.lowerBranch(0, "BEQ", "", Instr{Raw: "BEQ", Args: nil}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(BEQ missing arg) unexpectedly succeeded")
+	}
+	if _, _, err := c.lowerBranch(0, "BEQ", "", Instr{Raw: "BEQ R0", Args: []Operand{{Kind: OpReg, Reg: "R0"}}}, emitBr, func(string, string, string) error { return nil }); err == nil {
+		t.Fatalf("lowerBranch(BEQ bad target) unexpectedly succeeded")
+	}
+
+	var got string
+	condCapture := func(cond, _, _ string) error { got = cond; return errTestSentinel }
+	if _, _, err := c.lowerBranch(0, "BCS", "", Instr{Raw: "BCS done", Args: []Operand{{Kind: OpIdent, Ident: "done"}}}, emitBr, condCapture); err == nil || got != "HS" {
+		t.Fatalf("lowerBranch(BCS) = (%q, %v)", got, err)
+	}
+	got = ""
+	if _, _, err := c.lowerBranch(0, "BCC", "", Instr{Raw: "BCC done", Args: []Operand{{Kind: OpIdent, Ident: "done"}}}, emitBr, condCapture); err == nil || got != "LO" {
+		t.Fatalf("lowerBranch(BCC) = (%q, %v)", got, err)
+	}
+
+	c = mk(I32)
+	if err := c.tailCallAndRet(Operand{Kind: OpSym, Sym: "voidsink(SB)"}); err != nil {
+		t.Fatalf("tailCallAndRet(void sink) error = %v", err)
+	}
+	if err := c.callSym(Operand{Kind: OpSym, Sym: "missing(SB)"}); err != nil {
+		t.Fatalf("callSym(missing sig) error = %v", err)
+	}
+	if err := c.callSym(Operand{Kind: OpSym, Sym: "badarg(SB)"}); err == nil {
+		t.Fatalf("callSym(bad arg type) unexpectedly succeeded")
+	}
+}
+
+func TestTranslateFuncLinearMissedBranches(t *testing.T) {
+	var b strings.Builder
+
+	file, err := Parse(ArchARM, `TEXT ·cfgbad(SB),NOSPLIT,$0-0
+	CMP R0, R0
+	BAD
+	RET
+`)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	_, err = Translate(file, Options{
+		TargetTriple: "armv7-unknown-linux-gnueabihf",
+		Goarch:       "arm",
+		ResolveSym:   func(sym string) string { return "example." + strings.TrimPrefix(sym, "·") },
+		Sigs: map[string]FuncSig{
+			"example.cfgbad": {Name: "example.cfgbad", Ret: Void},
+		},
+	})
+	if err == nil {
+		t.Fatalf("Translate(cfgbad) unexpectedly succeeded")
+	}
+
+	err = translateFuncLinear(&b, ArchARM, Func{
+		Sym: "shift_ok",
+		Instrs: []Instr{
+			{Op: "MOVW", Raw: "MOVW R1>>1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftRight, ShiftAmount: 1}, {Kind: OpReg, Reg: "R0"}}},
+			{Op: "MOVW", Raw: "MOVW R0->1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R0", ShiftOp: ShiftArith, ShiftAmount: 1}, {Kind: OpReg, Reg: "R0"}}},
+			{Op: "MOVW", Raw: "MOVW R0@>1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R0", ShiftOp: ShiftRotate, ShiftAmount: 1}, {Kind: OpReg, Reg: "R0"}}},
+			{Op: OpRET, Raw: "RET"},
+		},
+	}, FuncSig{Name: "shift_ok", Ret: I32}, false)
+	if err != nil {
+		t.Fatalf("translateFuncLinear(shift ok) error = %v", err)
+	}
+
+	b.Reset()
+	err = translateFuncLinear(&b, ArchARM, Func{
+		Sym: "shift_bad_base",
+		Instrs: []Instr{
+			{Op: "MOVW", Raw: "MOVW R0<<1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R0", ShiftOp: ShiftLeft, ShiftAmount: 1}, {Kind: OpReg, Reg: "R0"}}},
+		},
+	}, FuncSig{Name: "shift_bad_base", Args: []LLVMType{LLVMType("{ i32, i32 }")}, ArgRegs: []Reg{"R0"}, Ret: I32}, false)
+	if err == nil {
+		t.Fatalf("translateFuncLinear(shift bad base) unexpectedly succeeded")
+	}
+
+	b.Reset()
+	err = translateFuncLinear(&b, ArchARM, Func{
+		Sym: "shift_bad_reg",
+		Instrs: []Instr{
+			{Op: "MOVW", Raw: "MOVW R0<<R1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R0", ShiftOp: ShiftLeft, ShiftReg: "R1"}, {Kind: OpReg, Reg: "R0"}}},
+		},
+	}, FuncSig{Name: "shift_bad_reg", Args: []LLVMType{I32, LLVMType("{ i32, i32 }")}, ArgRegs: []Reg{"R0", "R1"}, Ret: I32}, false)
+	if err == nil {
+		t.Fatalf("translateFuncLinear(shift bad reg) unexpectedly succeeded")
+	}
+
+	b.Reset()
+	err = translateFuncLinear(&b, ArchARM, Func{
+		Sym: "shift_bad_op",
+		Instrs: []Instr{
+			{Op: "MOVW", Raw: "MOVW R0**1, R0", Args: []Operand{{Kind: OpRegShift, Reg: "R0", ShiftOp: ShiftOp("**"), ShiftAmount: 1}, {Kind: OpReg, Reg: "R0"}}},
+		},
+	}, FuncSig{Name: "shift_bad_op", Ret: I32}, false)
+	if err == nil {
+		t.Fatalf("translateFuncLinear(shift bad op) unexpectedly succeeded")
+	}
+
+	for _, tc := range []struct {
+		arch Arch
+		op   Instr
+	}{
+		{arch: ArchAMD64, op: Instr{Op: "MOVW", Raw: "MOVW AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}},
+		{arch: ArchAMD64, op: Instr{Op: "MOVBU", Raw: "MOVBU AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}},
+		{arch: ArchAMD64, op: Instr{Op: "ADD", Raw: "ADD AX, AX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: AX}}}},
+	} {
+		b.Reset()
+		if err := translateFuncLinear(&b, tc.arch, Func{Sym: "skip", Instrs: []Instr{tc.op, {Op: OpRET, Raw: "RET"}}}, FuncSig{Name: "skip", Ret: I64}, false); err != nil {
+			t.Fatalf("translateFuncLinear(skip %s) error = %v", tc.op.Op, err)
+		}
+	}
+
+	for _, tc := range []Instr{
+		{Op: "MOVW", Raw: "MOVW R0, sink<>(SB)", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpSym, Sym: "sink<>(SB)"}}},
+		{Op: "MOVBU", Raw: "MOVBU R0, sink<>(SB)", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpSym, Sym: "sink<>(SB)"}}},
+		{Op: "ADD", Raw: "ADD R0, ret+8(FP)", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpFP, FPName: "ret", FPOffset: 8}}},
+	} {
+		b.Reset()
+		err := translateFuncLinear(&b, ArchARM, Func{Sym: "skip2", Instrs: []Instr{tc, {Op: OpRET, Raw: "RET"}}}, FuncSig{
+			Name: "skip2",
+			Ret:  I32,
+			Frame: FrameLayout{
+				Results: []FrameSlot{{Offset: 8, Type: I32, Index: 0}},
+			},
+		}, false)
+		if err == nil && tc.Op == "ADD" {
+			t.Fatalf("translateFuncLinear(bad add dst) unexpectedly succeeded")
+		}
+		if err != nil && tc.Op != "ADD" {
+			t.Fatalf("translateFuncLinear(skip arm %s) error = %v", tc.Op, err)
+		}
+	}
+}
+
+func TestARMArithErrorCoverage(t *testing.T) {
+	c, _ := newARMCtxForTest(t, FuncSig{Name: "example.arith_err", Ret: Void}, nil)
+	if err := c.lowerARMALU("ADD", "", false, Instr{Raw: "ADD R0, $1", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpImm, Imm: 1}}}); err == nil {
+		t.Fatalf("lowerARMALU(dst not reg 2-arg) unexpectedly succeeded")
+	}
+	if err := c.lowerARMALU("ADD", "", false, Instr{Raw: "ADD R0, R1, $2", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}, {Kind: OpImm, Imm: 2}}}); err == nil {
+		t.Fatalf("lowerARMALU(dst not reg 3-arg) unexpectedly succeeded")
+	}
+	if err := c.lowerARMALU("ADD", "", false, Instr{Raw: "ADD bad+8(FP), R0", Args: []Operand{{Kind: OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: OpReg, Reg: "R0"}}}); err == nil {
+		t.Fatalf("lowerARMALU(src eval err) unexpectedly succeeded")
+	}
+	delete(c.regSlot, Reg("R0"))
+	if err := c.lowerARMALU("ADD", "", false, Instr{Raw: "ADD $1, R0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: "R0"}}}); err == nil {
+		t.Fatalf("lowerARMALU(loadReg err) unexpectedly succeeded")
+	}
+
+	c, _ = newARMCtxForTest(t, FuncSig{Name: "example.arith_err2", Ret: Void}, nil)
+	if err := c.lowerARMALU("RSB", "", true, Instr{Raw: "RSB.S $1, R0, R1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}}}); err != nil {
+		t.Fatalf("lowerARMALU(RSB.S) error = %v", err)
+	}
+	if err := c.lowerARMALU("ORR", "", true, Instr{Raw: "ORR.S R0, R1, R2", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}, {Kind: OpReg, Reg: "R2"}}}); err != nil {
+		t.Fatalf("lowerARMALU(ORR.S) error = %v", err)
+	}
+	if err := c.lowerARMCompare("CMP", Instr{Raw: "CMP bad+8(FP), R0", Args: []Operand{{Kind: OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: OpReg, Reg: "R0"}}}); err == nil {
+		t.Fatalf("lowerARMCompare(src err) unexpectedly succeeded")
+	}
+	if err := c.lowerARMCompare("CMP", Instr{Raw: "CMP R0, bad+8(FP)", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpFPAddr, FPName: "bad", FPOffset: 8}}}); err == nil {
+		t.Fatalf("lowerARMCompare(lhs err) unexpectedly succeeded")
+	}
+	if err := c.lowerARMMVN("", false, Instr{Raw: "MVN", Args: nil}); err == nil {
+		t.Fatalf("lowerARMMVN(len err) unexpectedly succeeded")
+	}
+	c3, _ := newARMCtxForTest(t, FuncSig{Name: "example.arith_err3", Ret: Void}, nil)
+	if err := c3.lowerARMMVN("EQ", false, Instr{Raw: "MVN.EQ R0, R1", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpReg, Reg: "R1"}}}); err == nil {
+		t.Fatalf("lowerARMMVN(select err) unexpectedly succeeded")
+	}
+	if err := c.lowerARMADCSBC("ADC", "", false, Instr{Raw: "ADC", Args: nil}); err == nil {
+		t.Fatalf("lowerARMADCSBC(len err) unexpectedly succeeded")
+	}
+	if err := c.lowerARMADCSBC("ADC", "", false, Instr{Raw: "ADC bad+8(FP), R0", Args: []Operand{{Kind: OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: OpReg, Reg: "R0"}}}); err == nil {
+		t.Fatalf("lowerARMADCSBC(src err) unexpectedly succeeded")
+	}
+	if err := c.lowerARMADCSBC("ADC", "", false, Instr{Raw: "ADC R0, bad+8(FP), R1", Args: []Operand{{Kind: OpReg, Reg: "R0"}, {Kind: OpFPAddr, FPName: "bad", FPOffset: 8}, {Kind: OpReg, Reg: "R1"}}}); err == nil {
+		t.Fatalf("lowerARMADCSBC(lhs err) unexpectedly succeeded")
+	}
+
+	c4, _ := newARMCtxForTest(t, FuncSig{Name: "example.pair_err", Ret: Void}, nil)
+	delete(c4.regSlot, Reg("R1"))
+	if err := c4.selectRegPairWrite("R1", "R2", "", "1", "2"); err == nil {
+		t.Fatalf("selectRegPairWrite(store hi err) unexpectedly succeeded")
+	}
+	c5, _ := newARMCtxForTest(t, FuncSig{Name: "example.pair_err2", Ret: Void}, nil)
+	if err := c5.selectRegPairWrite("R1", "R2", "EQ", "1", "2"); err == nil {
+		t.Fatalf("selectRegPairWrite(cond err) unexpectedly succeeded")
+	}
+	c6, _ := newARMCtxForTest(t, FuncSig{Name: "example.pair_err3", Ret: Void}, nil)
+	c6.flagsWritten = true
+	delete(c6.regSlot, Reg("R1"))
+	if err := c6.selectRegPairWrite("R1", "R2", "EQ", "1", "2"); err == nil {
+		t.Fatalf("selectRegPairWrite(load hi err) unexpectedly succeeded")
+	}
+	c7, _ := newARMCtxForTest(t, FuncSig{Name: "example.pair_err4", Ret: Void}, nil)
+	c7.flagsWritten = true
+	delete(c7.regSlot, Reg("R2"))
+	if err := c7.selectRegPairWrite("R1", "R2", "EQ", "1", "2"); err == nil {
+		t.Fatalf("selectRegPairWrite(load lo err) unexpectedly succeeded")
 	}
 }
