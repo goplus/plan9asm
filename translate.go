@@ -142,8 +142,18 @@ func translateIRText(file *File, opt Options) (string, error) {
 		if sig.Ret == "" {
 			return "", fmt.Errorf("missing return type for %q", name)
 		}
+		if err := validateResolvedImmediates(file.Arch, *fn); err != nil {
+			return "", fmt.Errorf("%s: %v", name, err)
+		}
 		if sig.Attrs == "" {
 			sig.Attrs = attrRegistry.ref(inferFuncTargetFeatures(file.Arch, *fn))
+		}
+		if file.Arch == ArchARM && funcNeedsARMCFG(*fn) {
+			if err := translateFuncARM(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
+				return "", fmt.Errorf("%s: %v", name, err)
+			}
+			b.WriteString("\n")
+			continue
 		}
 		if file.Arch == ArchARM64 && funcNeedsARM64CFG(*fn) {
 			if err := translateFuncARM64(&b, *fn, sig, resolve, opt.Sigs, opt.AnnotateSource); err != nil {
@@ -166,6 +176,20 @@ func translateIRText(file *File, opt Options) (string, error) {
 	}
 	attrRegistry.emit(&b)
 	return b.String(), nil
+}
+
+func validateResolvedImmediates(arch Arch, fn Func) error {
+	if arch != ArchARM {
+		return nil
+	}
+	for _, ins := range fn.Instrs {
+		for _, arg := range ins.Args {
+			if arg.Kind == OpImm && arg.ImmRaw != "" {
+				return fmt.Errorf("unresolved symbolic immediate %q", arg.ImmRaw)
+			}
+		}
+	}
+	return nil
 }
 
 func emitExternFuncDecls(b *strings.Builder, file *File, resolve func(string) string, sigs map[string]FuncSig) {
@@ -433,6 +457,16 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 	// This is currently best-effort; the prototype primarily targets stdlib
 	// asm that uses FP slots.
 	switch arch {
+	case ArchARM:
+		if len(sig.ArgRegs) > 0 {
+			for i := 0; i < len(sig.Args) && i < len(sig.ArgRegs); i++ {
+				reg[sig.ArgRegs[i]] = ssaVal{typ: sig.Args[i], val: fmt.Sprintf("%%arg%d", i)}
+			}
+		} else {
+			for i := 0; i < len(sig.Args) && i < 4; i++ {
+				reg[Reg(fmt.Sprintf("R%d", i))] = ssaVal{typ: sig.Args[i], val: fmt.Sprintf("%%arg%d", i)}
+			}
+		}
 	case ArchARM64:
 		if len(sig.ArgRegs) > 0 {
 			for i := 0; i < len(sig.Args) && i < len(sig.ArgRegs); i++ {
@@ -633,9 +667,13 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 		return cur, nil
 	}
 
-	valueOf := func(op Operand) (ssaVal, error) {
+	var valueOf func(op Operand) (ssaVal, error)
+	valueOf = func(op Operand) (ssaVal, error) {
 		switch op.Kind {
 		case OpImm:
+			if op.ImmRaw != "" {
+				return ssaVal{}, fmt.Errorf("unresolved symbolic immediate %q", op.ImmRaw)
+			}
 			// Default immediates to i64; MOVL will cast to i32 as needed.
 			return ssaVal{typ: I64, val: fmt.Sprintf("%d", op.Imm)}, nil
 		case OpReg:
@@ -645,6 +683,46 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				return ssaVal{typ: I64, val: "0"}, nil
 			}
 			return v, nil
+		case OpRegShift:
+			v, err := valueOf(Operand{Kind: OpReg, Reg: op.Reg})
+			if err != nil {
+				return ssaVal{}, err
+			}
+			if arch != ArchARM {
+				return ssaVal{}, fmt.Errorf("shift operand only modeled for arm in linear lowering: %s", op)
+			}
+			v, err = emitCast(v, I32)
+			if err != nil {
+				return ssaVal{}, err
+			}
+			var shiftVal string
+			if op.ShiftReg != "" {
+				sv, err := valueOf(Operand{Kind: OpReg, Reg: op.ShiftReg})
+				if err != nil {
+					return ssaVal{}, err
+				}
+				sv, err = emitCast(sv, I32)
+				if err != nil {
+					return ssaVal{}, err
+				}
+				shiftVal = sv.val
+			} else {
+				shiftVal = fmt.Sprintf("%d", op.ShiftAmount)
+			}
+			name := newTmp()
+			switch op.ShiftOp {
+			case ShiftLeft:
+				fmt.Fprintf(b, "  %%%s = shl i32 %s, %s\n", name, v.val, shiftVal)
+			case ShiftRight:
+				fmt.Fprintf(b, "  %%%s = lshr i32 %s, %s\n", name, v.val, shiftVal)
+			case ShiftArith:
+				fmt.Fprintf(b, "  %%%s = ashr i32 %s, %s\n", name, v.val, shiftVal)
+			case ShiftRotate:
+				fmt.Fprintf(b, "  %%%s = call i32 @llvm.fshr.i32(i32 %s, i32 %s, i32 %s)\n", name, v.val, v.val, shiftVal)
+			default:
+				return ssaVal{}, fmt.Errorf("unsupported shift op %q", op.ShiftOp)
+			}
+			return ssaVal{typ: I32, val: "%" + name}, nil
 		case OpFP:
 			slot, ok := fpParamSlot(op.FPOffset)
 			if ok {
@@ -774,6 +852,58 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				continue
 			}
 			continue
+		case "MOVW":
+			if arch != ArchARM {
+				continue
+			}
+			src, dst := ins.Args[0], ins.Args[1]
+			v, err := valueOf(src)
+			if err != nil {
+				return err
+			}
+			v, err = emitCast(v, I32)
+			if err != nil {
+				return err
+			}
+			switch dst.Kind {
+			case OpReg:
+				if err := setReg(dst.Reg, v); err != nil {
+					return err
+				}
+			case OpFP:
+				if err := setResult(dst.FPOffset, v); err != nil {
+					return err
+				}
+			default:
+				continue
+			}
+			continue
+		case "MOVB", "MOVBU":
+			if arch != ArchARM {
+				continue
+			}
+			src, dst := ins.Args[0], ins.Args[1]
+			v, err := valueOf(src)
+			if err != nil {
+				return err
+			}
+			v, err = emitCast(v, I8)
+			if err != nil {
+				return err
+			}
+			switch dst.Kind {
+			case OpReg:
+				if err := setReg(dst.Reg, v); err != nil {
+					return err
+				}
+			case OpFP:
+				if err := setResult(dst.FPOffset, v); err != nil {
+					return err
+				}
+			default:
+				continue
+			}
+			continue
 		case OpMOVQ:
 			src, dst := ins.Args[0], ins.Args[1]
 			v, err := valueOf(src)
@@ -828,6 +958,70 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 				fmt.Fprintf(b, "  %%%s = xor i64 %s, %s\n", name, lhs.val, rhs.val)
 			}
 			reg[dst.Reg] = ssaVal{typ: I64, val: "%" + name}
+		case "ADD", "SUB", "AND", "ORR", "EOR", "RSB":
+			if arch != ArchARM {
+				continue
+			}
+			var lhs, rhs ssaVal
+			var dst Operand
+			switch len(ins.Args) {
+			case 2:
+				dst = ins.Args[1]
+				if dst.Kind != OpReg {
+					return fmt.Errorf("%s dst must be register: %s", ins.Op, ins.Raw)
+				}
+				var err error
+				lhs, err = valueOf(dst)
+				if err != nil {
+					return err
+				}
+				rhs, err = valueOf(ins.Args[0])
+				if err != nil {
+					return err
+				}
+			case 3:
+				dst = ins.Args[2]
+				if dst.Kind != OpReg {
+					return fmt.Errorf("%s dst must be register: %s", ins.Op, ins.Raw)
+				}
+				var err error
+				lhs, err = valueOf(ins.Args[1])
+				if err != nil {
+					return err
+				}
+				rhs, err = valueOf(ins.Args[0])
+				if err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("%s expects 2 or 3 operands: %s", ins.Op, ins.Raw)
+			}
+			var err error
+			lhs, err = emitCast(lhs, I32)
+			if err != nil {
+				return err
+			}
+			rhs, err = emitCast(rhs, I32)
+			if err != nil {
+				return err
+			}
+			name := newTmp()
+			switch strings.ToUpper(string(ins.Op)) {
+			case "ADD":
+				fmt.Fprintf(b, "  %%%s = add i32 %s, %s\n", name, lhs.val, rhs.val)
+			case "SUB":
+				fmt.Fprintf(b, "  %%%s = sub i32 %s, %s\n", name, lhs.val, rhs.val)
+			case "AND":
+				fmt.Fprintf(b, "  %%%s = and i32 %s, %s\n", name, lhs.val, rhs.val)
+			case "ORR":
+				fmt.Fprintf(b, "  %%%s = or i32 %s, %s\n", name, lhs.val, rhs.val)
+			case "EOR":
+				fmt.Fprintf(b, "  %%%s = xor i32 %s, %s\n", name, lhs.val, rhs.val)
+			case "RSB":
+				fmt.Fprintf(b, "  %%%s = sub i32 %s, %s\n", name, rhs.val, lhs.val)
+			}
+			reg[dst.Reg] = ssaVal{typ: I32, val: "%" + name}
+			continue
 
 		case OpMOVL:
 			src, dst := ins.Args[0], ins.Args[1]
@@ -1027,7 +1221,7 @@ func translateFuncLinear(b *strings.Builder, arch Arch, fn Func, sig FuncSig, an
 }
 
 func archReturnReg(arch Arch) Reg {
-	if arch == ArchARM64 {
+	if arch == ArchARM || arch == ArchARM64 {
 		return Reg("R0")
 	}
 	return AX

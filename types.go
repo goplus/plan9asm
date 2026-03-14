@@ -14,6 +14,7 @@ type Arch string
 
 const (
 	ArchAMD64 Arch = "amd64"
+	ArchARM   Arch = "arm"
 	ArchARM64 Arch = "arm64"
 )
 
@@ -149,6 +150,15 @@ const (
 	OpRegList
 )
 
+type ShiftOp string
+
+const (
+	ShiftLeft   ShiftOp = "<<"
+	ShiftRight  ShiftOp = ">>"
+	ShiftArith  ShiftOp = "->"
+	ShiftRotate ShiftOp = "@>"
+)
+
 // Operand models a minimal subset of Plan 9 asm operands.
 //
 // Supported:
@@ -158,11 +168,13 @@ const (
 type Operand struct {
 	Kind OperandKind
 
-	Imm int64 // OpImm
-	Reg Reg   // OpReg
+	Imm    int64  // OpImm
+	ImmRaw string // OpImm unresolved symbolic placeholder, including leading '$'
+	Reg    Reg    // OpReg
 	// OpRegShift
+	ShiftOp     ShiftOp
 	ShiftAmount int64
-	ShiftRight  bool
+	ShiftReg    Reg
 
 	FPName   string // OpFP (e.g. "a", "ret")
 	FPOffset int64  // OpFP
@@ -192,14 +204,18 @@ type MemRef struct {
 func (o Operand) String() string {
 	switch o.Kind {
 	case OpImm:
+		if o.ImmRaw != "" {
+			return o.ImmRaw
+		}
 		return fmt.Sprintf("$%d", o.Imm)
 	case OpReg:
 		return string(o.Reg)
 	case OpRegShift:
-		if o.ShiftRight {
-			return fmt.Sprintf("%s>>%d", o.Reg, o.ShiftAmount)
+		suffix := fmt.Sprintf("%d", o.ShiftAmount)
+		if o.ShiftReg != "" {
+			suffix = string(o.ShiftReg)
 		}
-		return fmt.Sprintf("%s<<%d", o.Reg, o.ShiftAmount)
+		return fmt.Sprintf("%s%s%s", o.Reg, o.ShiftOp, suffix)
 	case OpFP:
 		return fmt.Sprintf("%s+%d(FP)", o.FPName, o.FPOffset)
 	case OpFPAddr:
@@ -260,11 +276,27 @@ func parseImm(s string) (int64, bool) {
 		}
 		u, ok := parseImmExpr(v)
 		if !ok {
+			// Be permissive with symbolic immediates such as:
+			//   $(16 + callbackArgs__size)
+			// Parser/scan should accept them, but lowering must reject them
+			// explicitly via Operand.ImmRaw instead of silently materializing 0.
+			if isSymbolicImmPlaceholder(s) {
+				return 0, true
+			}
 			return 0, false
 		}
 		return int64(u), true
 	}
 	return int64(u), true
+}
+
+func isSymbolicImmPlaceholder(s string) bool {
+	expr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "$"))
+	if !strings.HasPrefix(expr, "(") || !strings.HasSuffix(expr, ")") {
+		return false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expr, "("), ")"))
+	return strings.ContainsAny(inner, "+-*/%<>&|^ \t")
 }
 
 func parseImmExpr(v string) (uint64, bool) {
@@ -475,13 +507,17 @@ func parseOperand(s string) (Operand, error) {
 		return Operand{}, fmt.Errorf("empty operand")
 	}
 	if imm, ok := parseImm(s); ok {
-		return Operand{Kind: OpImm, Imm: imm}, nil
+		op := Operand{Kind: OpImm, Imm: imm}
+		if isSymbolicImmPlaceholder(s) {
+			op.ImmRaw = s
+		}
+		return op, nil
 	}
 	if name, off, ok := parseFPAddr(s); ok {
 		return Operand{Kind: OpFPAddr, FPName: name, FPOffset: off}, nil
 	}
-	if base, amt, right, ok := parseRegShift(s); ok {
-		return Operand{Kind: OpRegShift, Reg: base, ShiftAmount: amt, ShiftRight: right}, nil
+	if base, sop, amt, shiftReg, ok := parseRegShift(s); ok {
+		return Operand{Kind: OpRegShift, Reg: base, ShiftOp: sop, ShiftAmount: amt, ShiftReg: shiftReg}, nil
 	}
 	if r, ok := parseReg(s); ok {
 		return Operand{Kind: OpReg, Reg: r}, nil
@@ -501,11 +537,11 @@ func parseOperand(s string) (Operand, error) {
 		regs := make([]Reg, 0, len(parts))
 		for _, p := range parts {
 			p = strings.TrimSpace(p)
-			r, ok := parseReg(p)
+			rs, ok := expandRegRange(p)
 			if !ok {
 				return Operand{}, fmt.Errorf("invalid reg in reg list %q: %q", s, p)
 			}
-			regs = append(regs, r)
+			regs = append(regs, rs...)
 		}
 		return Operand{Kind: OpRegList, RegList: regs}, nil
 	}
@@ -519,11 +555,11 @@ func parseOperand(s string) (Operand, error) {
 		regs := make([]Reg, 0, len(parts))
 		for _, p := range parts {
 			p = strings.TrimSpace(p)
-			r, ok := parseReg(p)
+			rs, ok := expandRegRange(p)
 			if !ok {
 				return Operand{}, fmt.Errorf("invalid reg in reg list %q: %q", s, p)
 			}
-			regs = append(regs, r)
+			regs = append(regs, rs...)
 		}
 		return Operand{Kind: OpRegList, RegList: regs}, nil
 	}
@@ -542,38 +578,102 @@ func parseOperand(s string) (Operand, error) {
 	return Operand{}, fmt.Errorf("unsupported operand: %q", s)
 }
 
-func parseRegShift(s string) (base Reg, amt int64, right bool, ok bool) {
+func parseRegShift(s string) (base Reg, sop ShiftOp, amt int64, shiftReg Reg, ok bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", 0, false, false
+		return "", "", 0, "", false
 	}
-	op := ""
-	i := strings.Index(s, "<<")
-	if i >= 0 {
-		op = "<<"
-	} else {
-		i = strings.Index(s, ">>")
-		if i >= 0 {
-			op = ">>"
+	for _, candidate := range []ShiftOp{ShiftRotate, ShiftArith, ShiftLeft, ShiftRight} {
+		i := strings.Index(s, string(candidate))
+		if i < 0 {
+			continue
+		}
+		l := strings.TrimSpace(s[:i])
+		r := strings.TrimSpace(s[i+len(candidate):])
+		if l == "" || r == "" {
+			return "", "", 0, "", false
+		}
+		br, ok := parseReg(l)
+		if !ok {
+			return "", "", 0, "", false
+		}
+		if rr, ok := parseReg(r); ok {
+			return br, candidate, 0, rr, true
+		}
+		if n, err := strconv.ParseInt(r, 0, 64); err == nil {
+			return br, candidate, n, "", true
+		}
+		if u, ok := parseImmExpr(r); ok {
+			return br, candidate, int64(u), "", true
+		}
+		return "", "", 0, "", false
+	}
+	return "", "", 0, "", false
+}
+
+func expandRegRange(part string) ([]Reg, bool) {
+	part = strings.TrimSpace(part)
+	dash := strings.IndexByte(part, '-')
+	if dash < 0 {
+		r, ok := parseReg(part)
+		if !ok {
+			return nil, false
+		}
+		return []Reg{r}, true
+	}
+	left := strings.TrimSpace(part[:dash])
+	right := strings.TrimSpace(part[dash+1:])
+	lr, ok := parseReg(left)
+	if !ok {
+		return nil, false
+	}
+	rr, ok := parseReg(right)
+	if !ok {
+		return nil, false
+	}
+	lp, li, ok := regRangeParts(lr)
+	if !ok {
+		return nil, false
+	}
+	rp, ri, ok := regRangeParts(rr)
+	if !ok || lp != rp {
+		return nil, false
+	}
+	step := 1
+	if li > ri {
+		step = -1
+	}
+	out := make([]Reg, 0, absInt(li-ri)+1)
+	for i := li; ; i += step {
+		out = append(out, Reg(fmt.Sprintf("%s%d", lp, i)))
+		if i == ri {
+			break
 		}
 	}
-	if op == "" {
-		return "", 0, false, false
+	return out, true
+}
+
+func regRangeParts(r Reg) (prefix string, idx int, ok bool) {
+	s := string(r)
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
 	}
-	l := strings.TrimSpace(s[:i])
-	r := strings.TrimSpace(s[i+2:])
-	if l == "" || r == "" {
-		return "", 0, false, false
+	if i == len(s) || i == 0 {
+		return "", 0, false
 	}
-	br, ok := parseReg(l)
-	if !ok {
-		return "", 0, false, false
-	}
-	n, err := strconv.ParseInt(r, 0, 64)
+	n, err := strconv.Atoi(s[i:])
 	if err != nil {
-		return "", 0, false, false
+		return "", 0, false
 	}
-	return br, n, op == ">>", true
+	return s[:i], n, true
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 type Op string

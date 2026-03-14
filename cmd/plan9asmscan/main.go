@@ -77,15 +77,15 @@ var (
 func main() {
 	var (
 		goos     = flag.String("goos", runtime.GOOS, "target GOOS")
-		goarch   = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64)")
+		goarch   = flag.String("goarch", runtime.GOARCH, "target GOARCH (amd64/arm64/arm)")
 		out      = flag.String("out", "", "write report to file (default stdout)")
 		format   = flag.String("format", "md", "output format: md|json")
 		repoRoot = flag.String("repo-root", ".", "llgo repository root for extracting supported ops")
 	)
 	flag.Parse()
 
-	if *goarch != "amd64" && *goarch != "arm64" {
-		fatalf("unsupported -goarch %q (expect amd64/arm64)", *goarch)
+	if *goarch != "amd64" && *goarch != "arm64" && *goarch != "arm" {
+		fatalf("unsupported -goarch %q (expect amd64/arm64/arm)", *goarch)
 	}
 	arch, err := toPlan9Arch(*goarch)
 	if err != nil {
@@ -136,6 +136,8 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 	switch goarch {
 	case "amd64":
 		return plan9asm.ArchAMD64, nil
+	case "arm":
+		return plan9asm.ArchARM, nil
 	case "arm64":
 		return plan9asm.ArchARM64, nil
 	default:
@@ -146,11 +148,16 @@ func toPlan9Arch(goarch string) (plan9asm.Arch, error) {
 func listStdPackages(goos, goarch string) ([]pkgJSON, error) {
 	cmd := exec.Command("go", "list", "-json", "std")
 	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
 		"GOOS="+goos,
 		"GOARCH="+goarch,
 	)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return nil, fmt.Errorf("go list -json std: %w: %s", err, msg)
+		}
 		return nil, fmt.Errorf("go list -json std: %w", err)
 	}
 

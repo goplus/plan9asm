@@ -4,6 +4,8 @@ import "strings"
 
 func emitArchPrelude(b *strings.Builder, arch Arch, goarch string) {
 	switch arch {
+	case ArchARM:
+		emitARMPrelude(b)
 	case ArchARM64:
 		emitARM64Prelude(b)
 	case ArchAMD64:

@@ -142,6 +142,8 @@ func goArchFor(goarch string) (Arch, error) {
 	switch goarch {
 	case "amd64", "386":
 		return ArchAMD64, nil
+	case "arm":
+		return ArchARM, nil
 	case "arm64":
 		return ArchARM64, nil
 	default:
