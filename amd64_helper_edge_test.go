@@ -662,3 +662,192 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 		}
 	}
 }
+
+func TestAMD64VectorCoverage(t *testing.T) {
+	fn := Func{
+		Instrs: []Instr{
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: BX}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: DX}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: DI}, {Kind: OpReg, Reg: SI}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("R8")}, {Kind: OpReg, Reg: Reg("R9")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("X2")}, {Kind: OpReg, Reg: Reg("X3")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("Y2")}, {Kind: OpReg, Reg: Reg("Y3")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("Z2")}, {Kind: OpReg, Reg: Reg("Z3")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K2")}}},
+			{Op: "MOVQ", Args: []Operand{{Kind: OpReg, Reg: Reg("K3")}, {Kind: OpReg, Reg: Reg("X4")}}},
+		},
+	}
+	c, b := newAMD64CtxWithFuncForTest(t, fn, FuncSig{Name: "example.vec", Ret: Void}, nil)
+	mustLower := func(op Op, ins Instr) {
+		t.Helper()
+		if ok, term, err := c.lowerVec(op, ins); !ok || term || err != nil {
+			t.Fatalf("lowerVec(%s) = (%v, %v, %v)", op, ok, term, err)
+		}
+	}
+
+	mustLower("MOVL", Instr{Raw: "MOVL $1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}}})
+	mustLower("MOVD", Instr{Raw: "MOVD AX, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("MOVQ", Instr{Raw: "MOVQ BX, X2", Args: []Operand{{Kind: OpReg, Reg: BX}, {Kind: OpReg, Reg: Reg("X2")}}})
+	mustLower("MOVQ", Instr{Raw: "MOVQ X2, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X2")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("KXORQ", Instr{Raw: "KXORQ K1, K2, K3", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("K2")}, {Kind: OpReg, Reg: Reg("K3")}}})
+	mustLower("KMOVB", Instr{Raw: "KMOVB AX, K1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("K1")}}})
+	mustLower("KMOVW", Instr{Raw: "KMOVW K1, 8(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}}})
+	mustLower("KMOVQ", Instr{Raw: "KMOVQ K1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("VPERMB", Instr{Raw: "VPERMB Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPERMB", Instr{Raw: "VPERMB Z0, Z1, K1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VGF2P8AFFINEQB", Instr{Raw: "VGF2P8AFFINEQB $1, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPERMI2B", Instr{Raw: "VPERMI2B Z0, Z1, K1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPOPCNTB", Instr{Raw: "VPOPCNTB Z0, Z1", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}}})
+	mustLower("VPCMPUQ", Instr{Raw: "VPCMPUQ $1, Z0, Z1, K1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}}})
+	mustLower("VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, K1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPXORQ", Instr{Raw: "VPXORQ Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPANDQ", Instr{Raw: "VPANDQ Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPORQ", Instr{Raw: "VPORQ Z0, Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPXOR", Instr{Raw: "VPXOR Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPOR", Instr{Raw: "VPOR Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPADDD", Instr{Raw: "VPADDD Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPADDQ", Instr{Raw: "VPADDQ Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPXOR", Instr{Raw: "VPXOR X0, X1, X2", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: Reg("X2")}}})
+	mustLower("VPSHUFB", Instr{Raw: "VPSHUFB Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPSHUFB", Instr{Raw: "VPSHUFB X0, X1, X2", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: Reg("X2")}}})
+	mustLower("VPSHUFD", Instr{Raw: "VPSHUFD $0x1b, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 0x1b}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPSLLD", Instr{Raw: "VPSLLD $2, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPSRLD", Instr{Raw: "VPSRLD $2, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPSRLQ", Instr{Raw: "VPSRLQ $2, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPSLLQ", Instr{Raw: "VPSLLQ $2, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPALIGNR", Instr{Raw: "VPALIGNR $3, Y0, Y1, Y2", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPERM2I128", Instr{Raw: "VPERM2I128 $0x21, Y0, Y1, Y2", Args: []Operand{{Kind: OpImm, Imm: 0x21}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VINSERTI128", Instr{Raw: "VINSERTI128 $1, X0, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VMOVNTDQ", Instr{Raw: "VMOVNTDQ Y0, 32(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 32}}}})
+	mustLower("AESENC", Instr{Raw: "AESENC X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("AESENCLAST", Instr{Raw: "AESENCLAST X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("AESDEC", Instr{Raw: "AESDEC X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("AESDECLAST", Instr{Raw: "AESDECLAST X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("AESIMC", Instr{Raw: "AESIMC X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("AESKEYGENASSIST", Instr{Raw: "AESKEYGENASSIST $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("VPTEST", Instr{Raw: "VPTEST Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("PCMPESTRI", Instr{Raw: "PCMPESTRI $0x0c, 48(BX), X0", Args: []Operand{{Kind: OpImm, Imm: 0x0c}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 48}}, {Kind: OpReg, Reg: Reg("X0")}}})
+	mustLower("VPAND", Instr{Raw: "VPAND Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPBLENDD", Instr{Raw: "VPBLENDD $0xaa, Y0, Y1, Y2", Args: []Operand{{Kind: OpImm, Imm: 0xaa}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPBROADCASTB", Instr{Raw: "VPBROADCASTB X0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}})
+	mustLower("VPSRLDQ", Instr{Raw: "VPSRLDQ $3, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VPSLLDQ", Instr{Raw: "VPSLLDQ $3, Y0, Y1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("PUNPCKLBW", Instr{Raw: "PUNPCKLBW X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSHUFL", Instr{Raw: "PSHUFL $0x1b, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 0x1b}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSHUFHW", Instr{Raw: "PSHUFHW $0x1b, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 0x1b}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHUFPS", Instr{Raw: "SHUFPS $0x1b, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 0x1b}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PBLENDW", Instr{Raw: "PBLENDW $0xaa, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 0xaa}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA256MSG1", Instr{Raw: "SHA256MSG1 X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA256MSG2", Instr{Raw: "SHA256MSG2 X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA1NEXTE", Instr{Raw: "SHA1NEXTE X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA1MSG1", Instr{Raw: "SHA1MSG1 X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA1MSG2", Instr{Raw: "SHA1MSG2 X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA1RNDS4", Instr{Raw: "SHA1RNDS4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("SHA256RNDS2", Instr{Raw: "SHA256RNDS2 X0, X1, X2", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: Reg("X2")}}})
+	mustLower("VMOVDQU64", Instr{Raw: "VMOVDQU64 Z0, 64(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 64}}}})
+	mustLower("VMOVDQU64", Instr{Raw: "VMOVDQU64 64(BX), Z1", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 64}}, {Kind: OpReg, Reg: Reg("Z1")}}})
+	mustLower("VMOVDQU64", Instr{Raw: "VMOVDQU64 Z1, Z2", Args: []Operand{{Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VMOVDQU", Instr{Raw: "VMOVDQU Y0, 80(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 80}}}})
+	mustLower("VMOVDQU", Instr{Raw: "VMOVDQU 80(BX), Y1", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 80}}, {Kind: OpReg, Reg: Reg("Y1")}}})
+	mustLower("VMOVDQU", Instr{Raw: "VMOVDQU X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("VPCMPEQB", Instr{Raw: "VPCMPEQB Y0, Y1, Y2", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("Y2")}}})
+	mustLower("VPMOVMSKB", Instr{Raw: "VPMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("MOVOU", Instr{Raw: "MOVOU 96(BX), X0", Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: BX, Off: 96}}, {Kind: OpReg, Reg: Reg("X0")}}})
+	mustLower("MOVOU", Instr{Raw: "MOVOU X0, 112(BX)", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 112}}}})
+	mustLower("PXOR", Instr{Raw: "PXOR X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PAND", Instr{Raw: "PAND X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PANDN", Instr{Raw: "PANDN X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PADDL", Instr{Raw: "PADDL X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PADDQ", Instr{Raw: "PADDQ X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSUBL", Instr{Raw: "PSUBL X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSLLL", Instr{Raw: "PSLLL $1, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSRLL", Instr{Raw: "PSRLL $1, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSRAL", Instr{Raw: "PSRAL $1, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PCMPEQL", Instr{Raw: "PCMPEQL X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("VPCLMULQDQ", Instr{Raw: "VPCLMULQDQ $0x11, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x11}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VPTERNLOGD", Instr{Raw: "VPTERNLOGD $0x96, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x96}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}})
+	mustLower("VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, Z0, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("X0")}}})
+	mustLower("PCLMULQDQ", Instr{Raw: "PCLMULQDQ $0x11, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 0x11}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PCMPEQB", Instr{Raw: "PCMPEQB X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PMOVMSKB", Instr{Raw: "PMOVMSKB X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("PSHUFB", Instr{Raw: "PSHUFB X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PINSRQ", Instr{Raw: "PINSRQ $1, AX, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PINSRD", Instr{Raw: "PINSRD $1, AX, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PINSRW", Instr{Raw: "PINSRW $1, AX, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PINSRB", Instr{Raw: "PINSRB $1, AX, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PEXTRB", Instr{Raw: "PEXTRB $1, X1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("PEXTRB", Instr{Raw: "PEXTRB $1, X1, 128(BX)", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 128}}}})
+	mustLower("PALIGNR", Instr{Raw: "PALIGNR $3, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSRLDQ", Instr{Raw: "PSRLDQ $3, X1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSLLDQ", Instr{Raw: "PSLLDQ $3, X1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PSRLQ", Instr{Raw: "PSRLQ $1, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}}})
+	mustLower("PEXTRD", Instr{Raw: "PEXTRD $1, X1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpReg, Reg: AX}}})
+	mustLower("PEXTRD", Instr{Raw: "PEXTRD $1, X1, 136(BX)", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X1")}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 136}}}})
+
+	if _, err := c.loadXVecOperand(Operand{Kind: OpReg, Reg: AX}); err == nil {
+		t.Fatalf("loadXVecOperand(non-x) unexpectedly succeeded")
+	}
+	if _, err := c.loadYVecOperand(Operand{Kind: OpReg, Reg: AX}); err == nil {
+		t.Fatalf("loadYVecOperand(non-y) unexpectedly succeeded")
+	}
+	if _, err := c.loadZVecOperand(Operand{Kind: OpReg, Reg: AX}); err == nil {
+		t.Fatalf("loadZVecOperand(non-z) unexpectedly succeeded")
+	}
+	if got := llvmShiftRightBytesMask(3); !strings.Contains(got, "i32 3") || !strings.Contains(got, "i32 16") {
+		t.Fatalf("llvmShiftRightBytesMask(3) = %q", got)
+	}
+	if got := llvmShiftLeftBytesMask(3); !strings.Contains(got, "i32 16") {
+		t.Fatalf("llvmShiftLeftBytesMask(3) = %q", got)
+	}
+	if got := llvmAlignRightBytesMask(20); !strings.Contains(got, "i32 20") {
+		t.Fatalf("llvmAlignRightBytesMask(20) = %q", got)
+	}
+	if got := llvmAllOnesI8Vec(4); got != "<i8 -1, i8 -1, i8 -1, i8 -1>" {
+		t.Fatalf("llvmAllOnesI8Vec(4) = %q", got)
+	}
+	if !isAMD64ZReg(Reg("Z0")) || isAMD64ZReg(AX) {
+		t.Fatalf("isAMD64ZReg() mismatch")
+	}
+	if got := amd64SelectZByAnyMask(c, "zeroinitializer", "1"); got == "" {
+		t.Fatalf("amd64SelectZByAnyMask() returned empty value")
+	}
+	pred := c.newTmp()
+	b.WriteString("  %" + pred + " = icmp eq <8 x i64> zeroinitializer, zeroinitializer\n")
+	if got := amd64PackI1x8ToI64(c, "%"+pred); got == "" {
+		t.Fatalf("amd64PackI1x8ToI64() returned empty value")
+	}
+	if got := amd64BytePopcountZ(c, "zeroinitializer"); got == "" {
+		t.Fatalf("amd64BytePopcountZ() returned empty value")
+	}
+
+	out := b.String()
+	for _, want := range []string{
+		"@llvm.x86.aesni.aesenc",
+		"@llvm.x86.aesni.aesenclast",
+		"@llvm.x86.aesni.aesdec",
+		"@llvm.x86.aesni.aesdeclast",
+		"@llvm.x86.aesni.aesimc",
+		"@llvm.x86.aesni.aeskeygenassist",
+		"@llvm.x86.ssse3.pshuf.b.128",
+		"@llvm.x86.sse2.pmovmskb.128",
+		"@llvm.x86.pclmulqdq",
+		"shufflevector <64 x i8>",
+		"bitcast <64 x i8>",
+		"select <16 x i1>",
+		"select <32 x i1>",
+		"store <64 x i8>",
+		"store <32 x i8>",
+		"store <16 x i8>",
+		"extractelement <16 x i8>",
+		"insertelement <2 x i64>",
+		"icmp ult <8 x i64>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
