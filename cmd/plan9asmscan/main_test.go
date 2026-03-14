@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -305,5 +307,122 @@ func TestBuildReportAndJSONShape(t *testing.T) {
 	}
 	if !strings.Contains(string(js), `"goarch":"amd64"`) {
 		t.Fatalf("json output missing goarch: %s", js)
+	}
+}
+
+func TestClusterAndFamilyCoverageMore(t *testing.T) {
+	clusterCases := []struct {
+		goarch string
+		op     string
+		want   string
+	}{
+		{"amd64", "RET", "x86-control"},
+		{"amd64", "VZEROUPPER", "x86-simd"},
+		{"amd64", "CRC32Q", "x86-crc"},
+		{"amd64", "LOCK", "x86-atomic"},
+		{"amd64", "BTQ", "x86-bit-shift"},
+		{"amd64", "MOVQ", "x86-scalar"},
+		{"arm64", "VADD", "arm64-neon"},
+		{"arm64", "CBNZ", "arm64-control"},
+		{"arm64", "SWPALD", "arm64-atomic"},
+		{"arm64", "RBIT", "arm64-bit-shift"},
+		{"arm64", "ADD", "arm64-scalar"},
+		{"other", "MOV", "other"},
+	}
+	for _, tc := range clusterCases {
+		if got := clusterOf(tc.goarch, tc.op); got != tc.want {
+			t.Fatalf("clusterOf(%q, %q) = %q, want %q", tc.goarch, tc.op, got, tc.want)
+		}
+	}
+
+	familyCases := []struct {
+		goarch string
+		op     string
+		want   string
+	}{
+		{"amd64", "AESENC", "aes"},
+		{"amd64", "SHA256MSG2", "sha"},
+		{"amd64", "VGF2P8AFFINEQB", "gfni"},
+		{"amd64", "KORW", "avx512-mask"},
+		{"amd64", "VZEROALL", "avx-vector"},
+		{"amd64", "MOVAPS", "sse-simd"},
+		{"amd64", "ADCXQ", "bmi2-adx"},
+		{"amd64", "MFENCE", "atomic-memory"},
+		{"amd64", "JCS", "branch-alias"},
+		{"amd64", "SHRQ", "bit-rotate-shift"},
+		{"amd64", "ADJSP", "move-pseudo"},
+		{"amd64", "ADDQ", "scalar-misc"},
+		{"arm64", "AESD", "crypto"},
+		{"arm64", "VEOR", "neon"},
+		{"arm64", "TBZ", "branch"},
+		{"arm64", "CASALD", "atomic-memory"},
+		{"arm64", "ADD", "scalar-misc"},
+		{"other", "X", "other"},
+	}
+	for _, tc := range familyCases {
+		if got := familyOf(tc.goarch, tc.op); got != tc.want {
+			t.Fatalf("familyOf(%q, %q) = %q, want %q", tc.goarch, tc.op, got, tc.want)
+		}
+	}
+}
+
+func TestMainAndFatalfSubprocess(t *testing.T) {
+	testBin := os.Args[0]
+	if os.Getenv("PLAN9ASMSCAN_MAIN_HELPER") == "1" {
+		oldArgs := os.Args
+		defer func() { os.Args = oldArgs }()
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+		os.Args = []string{
+			"plan9asmscan",
+			"-goos=linux",
+			"-goarch=amd64",
+			"-format=json",
+			"-repo-root=../..",
+			"-out=" + filepath.Join(os.TempDir(), "plan9asmscan-test.json"),
+		}
+		main()
+		return
+	}
+	if os.Getenv("PLAN9ASMSCAN_FATALF_HELPER") == "1" {
+		fatalf("boom %d", 7)
+		return
+	}
+
+	outPath := filepath.Join(t.TempDir(), "report.json")
+	oldArgs := os.Args
+	oldFlags := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldFlags
+	}()
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	os.Args = []string{
+		"plan9asmscan",
+		"-goos=linux",
+		"-goarch=amd64",
+		"-format=json",
+		"-repo-root=../..",
+		"-out=" + outPath,
+	}
+	main()
+	if data, err := os.ReadFile(outPath); err != nil || !strings.Contains(string(data), `"goarch": "amd64"`) {
+		t.Fatalf("main() output = (%q, %v)", string(data), err)
+	}
+
+	cmd := exec.Command(testBin, "-test.run=TestMainAndFatalfSubprocess")
+	cmd.Env = append(os.Environ(), "PLAN9ASMSCAN_MAIN_HELPER=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("main helper failed: %v\n%s", err, out)
+	}
+
+	fcmd := exec.Command(testBin, "-test.run=TestMainAndFatalfSubprocess")
+	fcmd.Env = append(os.Environ(), "PLAN9ASMSCAN_FATALF_HELPER=1")
+	fout, err := fcmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("fatalf helper unexpectedly succeeded")
+	}
+	if !strings.Contains(string(fout), "boom 7") {
+		t.Fatalf("fatalf output = %q, want boom 7", string(fout))
 	}
 }
