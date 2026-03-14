@@ -14,20 +14,7 @@ func newAMD64CtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[str
 		sigs = map[string]FuncSig{}
 	}
 	var b strings.Builder
-	c := newAMD64Ctx(&b, fn, sig, func(sym string) string {
-		sym = goStripABISuffix(sym)
-		sym = strings.ReplaceAll(sym, "∕", "/")
-		if strings.HasPrefix(sym, "runtime·") {
-			return strings.ReplaceAll(sym, "·", ".")
-		}
-		if strings.HasPrefix(sym, "·") {
-			return "example." + strings.TrimPrefix(sym, "·")
-		}
-		if !strings.Contains(sym, "·") && !strings.Contains(sym, ".") && !strings.Contains(sym, "/") {
-			return "example." + sym
-		}
-		return strings.ReplaceAll(sym, "·", ".")
-	}, sigs, false)
+	c := newAMD64Ctx(&b, fn, sig, testResolveSym("example"), sigs, false)
 	if err := c.emitEntryAllocas(); err != nil {
 		t.Fatalf("emitEntryAllocas() error = %v", err)
 	}
@@ -84,133 +71,139 @@ func TestAMD64CtxHelperEdges(t *testing.T) {
 		t.Fatalf("popI64() returned empty value")
 	}
 
-	if got, err := c.loadX("X0"); err != nil || got == "" {
-		t.Fatalf("loadX(X0) = (%q, %v)", got, err)
-	}
-	if err := c.storeX("X1", "<16 x i8> zeroinitializer"); err != nil {
-		t.Fatalf("storeX(X1) error = %v", err)
-	}
-	if _, err := c.loadX("AX"); err == nil {
-		t.Fatalf("loadX(AX) unexpectedly succeeded")
-	}
-	if err := c.storeX("AX", "<16 x i8> zeroinitializer"); err == nil {
-		t.Fatalf("storeX(AX) unexpectedly succeeded")
-	}
-
-	if got, err := c.loadY("Y2"); err != nil || got == "" {
-		t.Fatalf("loadY(Y2) = (%q, %v)", got, err)
-	}
-	if err := c.storeY("Y3", "<32 x i8> zeroinitializer"); err != nil {
-		t.Fatalf("storeY(Y3) error = %v", err)
-	}
-	if _, err := c.loadY("AX"); err == nil {
-		t.Fatalf("loadY(AX) unexpectedly succeeded")
-	}
-	if err := c.storeY("AX", "<32 x i8> zeroinitializer"); err == nil {
-		t.Fatalf("storeY(AX) unexpectedly succeeded")
-	}
-
-	if got, err := c.loadZ("Z4"); err != nil || got == "" {
-		t.Fatalf("loadZ(Z4) = (%q, %v)", got, err)
-	}
-	if err := c.storeZ("Z5", "<64 x i8> zeroinitializer"); err != nil {
-		t.Fatalf("storeZ(Z5) error = %v", err)
-	}
-	if _, err := c.loadZ("AX"); err == nil {
-		t.Fatalf("loadZ(AX) unexpectedly succeeded")
-	}
-	if err := c.storeZ("AX", "<64 x i8> zeroinitializer"); err == nil {
-		t.Fatalf("storeZ(AX) unexpectedly succeeded")
-	}
-
-	if got, err := c.loadK("K1"); err != nil || got == "" {
-		t.Fatalf("loadK(K1) = (%q, %v)", got, err)
-	}
-	if err := c.storeK("K2", "9"); err != nil {
-		t.Fatalf("storeK(K2) error = %v", err)
-	}
-	if _, err := c.loadK("AX"); err == nil {
-		t.Fatalf("loadK(AX) unexpectedly succeeded")
-	}
-	if err := c.storeK("AX", "9"); err == nil {
-		t.Fatalf("storeK(AX) unexpectedly succeeded")
-	}
-
-	c.setZFlagFromI64("1")
-	c.setZSFlagsFromI64("2")
-	c.setZSFlagsFromI32("3")
-	c.setCmpFlags("4", "5")
-	if got := c.loadFlag(c.flagsZSlot); got == "" {
-		t.Fatalf("loadFlag() returned empty value")
-	}
-
-	if slot, ok := c.fpParam(32); !ok || slot.Type != I32 {
-		t.Fatalf("fpParam(32) = (%#v, %v)", slot, ok)
-	}
-	if _, ok := c.fpParam(999); ok {
-		t.Fatalf("fpParam(999) unexpectedly succeeded")
-	}
-	if alloca, ty, ok := c.fpResultAlloca(80); !ok || alloca == "" || ty != I32 {
-		t.Fatalf("fpResultAlloca(80) = (%q, %q, %v)", alloca, ty, ok)
-	}
-	if _, _, ok := c.fpResultAlloca(999); ok {
-		t.Fatalf("fpResultAlloca(999) unexpectedly succeeded")
-	}
-	c.markFPResultAddrTaken(88)
-	c.markFPResultWritten(80)
-
-	for _, off := range []int64{0, 8, 16, 24, 32, 40, 48, 56} {
-		if got, err := c.evalFPToI64(off); err != nil || got == "" {
-			t.Fatalf("evalFPToI64(%d) = (%q, %v)", off, got, err)
+	t.Run("VectorRegs", func(t *testing.T) {
+		if got, err := c.loadX("X0"); err != nil || got == "" {
+			t.Fatalf("loadX(X0) = (%q, %v)", got, err)
 		}
-	}
-	c.fpParams[64] = FrameSlot{Offset: 64, Type: LLVMType("v4i32"), Index: 0}
-	if _, err := c.evalFPToI64(64); err == nil {
-		t.Fatalf("evalFPToI64(unsupported type) unexpectedly succeeded")
-	}
-	c.fpParams[72] = FrameSlot{Offset: 72, Type: I64, Index: 99}
-	if _, err := c.evalFPToI64(72); err == nil {
-		t.Fatalf("evalFPToI64(invalid index) unexpectedly succeeded")
-	}
+		if err := c.storeX("X1", "<16 x i8> zeroinitializer"); err != nil {
+			t.Fatalf("storeX(X1) error = %v", err)
+		}
+		if _, err := c.loadX("AX"); err == nil {
+			t.Fatalf("loadX(AX) unexpectedly succeeded")
+		}
+		if err := c.storeX("AX", "<16 x i8> zeroinitializer"); err == nil {
+			t.Fatalf("storeX(AX) unexpectedly succeeded")
+		}
 
-	if err := c.storeFPResult(80, I64, "11"); err != nil {
-		t.Fatalf("storeFPResult(i64->i32) error = %v", err)
-	}
-	if err := c.storeFPResult(88, I64, "12"); err != nil {
-		t.Fatalf("storeFPResult(i64->ptr) error = %v", err)
-	}
-	if err := c.storeFPResult(96, I64, "13"); err != nil {
-		t.Fatalf("storeFPResult(i64->double) error = %v", err)
-	}
-	if err := c.storeFPResult(104, LLVMType("float"), "%f"); err != nil {
-		t.Fatalf("storeFPResult(float->float) error = %v", err)
-	}
-	if err := c.storeFPResult(112, I8, "15"); err != nil {
-		t.Fatalf("storeFPResult(i8->i16) error = %v", err)
-	}
-	if err := c.storeFPResult(96, LLVMType("double"), "%x"); err != nil {
-		t.Fatalf("storeFPResult(double->double) error = %v", err)
-	}
-	if err := c.storeFPResult(80, Ptr, "%x"); err == nil {
-		t.Fatalf("storeFPResult(ptr->i32) unexpectedly succeeded")
-	}
+		if got, err := c.loadY("Y2"); err != nil || got == "" {
+			t.Fatalf("loadY(Y2) = (%q, %v)", got, err)
+		}
+		if err := c.storeY("Y3", "<32 x i8> zeroinitializer"); err != nil {
+			t.Fatalf("storeY(Y3) error = %v", err)
+		}
+		if _, err := c.loadY("AX"); err == nil {
+			t.Fatalf("loadY(AX) unexpectedly succeeded")
+		}
+		if err := c.storeY("AX", "<32 x i8> zeroinitializer"); err == nil {
+			t.Fatalf("storeY(AX) unexpectedly succeeded")
+		}
 
-	if got, err := c.loadFPResult(FrameSlot{Index: 0, Type: I32}); err != nil || got == "" {
-		t.Fatalf("loadFPResult() = (%q, %v)", got, err)
-	}
-	if _, err := c.loadFPResult(FrameSlot{Index: 99, Type: I32}); err == nil {
-		t.Fatalf("loadFPResult(missing) unexpectedly succeeded")
-	}
+		if got, err := c.loadZ("Z4"); err != nil || got == "" {
+			t.Fatalf("loadZ(Z4) = (%q, %v)", got, err)
+		}
+		if err := c.storeZ("Z5", "<64 x i8> zeroinitializer"); err != nil {
+			t.Fatalf("storeZ(Z5) error = %v", err)
+		}
+		if _, err := c.loadZ("AX"); err == nil {
+			t.Fatalf("loadZ(AX) unexpectedly succeeded")
+		}
+		if err := c.storeZ("AX", "<64 x i8> zeroinitializer"); err == nil {
+			t.Fatalf("storeZ(AX) unexpectedly succeeded")
+		}
 
-	if !isAMD64FloatRetTy(LLVMType("double")) || !isAMD64FloatRetTy(LLVMType("float")) || isAMD64FloatRetTy(I64) {
-		t.Fatalf("isAMD64FloatRetTy() mismatch")
-	}
-	if got, ok := c.retIntRegByOrd(1); !ok || got != BX {
-		t.Fatalf("retIntRegByOrd(1) = (%q, %v)", got, ok)
-	}
-	if _, ok := c.retIntRegByOrd(-1); ok {
-		t.Fatalf("retIntRegByOrd(-1) unexpectedly succeeded")
-	}
+		if got, err := c.loadK("K1"); err != nil || got == "" {
+			t.Fatalf("loadK(K1) = (%q, %v)", got, err)
+		}
+		if err := c.storeK("K2", "9"); err != nil {
+			t.Fatalf("storeK(K2) error = %v", err)
+		}
+		if _, err := c.loadK("AX"); err == nil {
+			t.Fatalf("loadK(AX) unexpectedly succeeded")
+		}
+		if err := c.storeK("AX", "9"); err == nil {
+			t.Fatalf("storeK(AX) unexpectedly succeeded")
+		}
+	})
+
+	t.Run("FlagsAndFP", func(t *testing.T) {
+		c.setZFlagFromI64("1")
+		c.setZSFlagsFromI64("2")
+		c.setZSFlagsFromI32("3")
+		c.setCmpFlags("4", "5")
+		if got := c.loadFlag(c.flagsZSlot); got == "" {
+			t.Fatalf("loadFlag() returned empty value")
+		}
+
+		if slot, ok := c.fpParam(32); !ok || slot.Type != I32 {
+			t.Fatalf("fpParam(32) = (%#v, %v)", slot, ok)
+		}
+		if _, ok := c.fpParam(999); ok {
+			t.Fatalf("fpParam(999) unexpectedly succeeded")
+		}
+		if alloca, ty, ok := c.fpResultAlloca(80); !ok || alloca == "" || ty != I32 {
+			t.Fatalf("fpResultAlloca(80) = (%q, %q, %v)", alloca, ty, ok)
+		}
+		if _, _, ok := c.fpResultAlloca(999); ok {
+			t.Fatalf("fpResultAlloca(999) unexpectedly succeeded")
+		}
+		c.markFPResultAddrTaken(88)
+		c.markFPResultWritten(80)
+
+		for _, off := range []int64{0, 8, 16, 24, 32, 40, 48, 56} {
+			if got, err := c.evalFPToI64(off); err != nil || got == "" {
+				t.Fatalf("evalFPToI64(%d) = (%q, %v)", off, got, err)
+			}
+		}
+		c.fpParams[64] = FrameSlot{Offset: 64, Type: LLVMType("v4i32"), Index: 0}
+		if _, err := c.evalFPToI64(64); err == nil {
+			t.Fatalf("evalFPToI64(unsupported type) unexpectedly succeeded")
+		}
+		c.fpParams[72] = FrameSlot{Offset: 72, Type: I64, Index: 99}
+		if _, err := c.evalFPToI64(72); err == nil {
+			t.Fatalf("evalFPToI64(invalid index) unexpectedly succeeded")
+		}
+
+		if err := c.storeFPResult(80, I64, "11"); err != nil {
+			t.Fatalf("storeFPResult(i64->i32) error = %v", err)
+		}
+		if err := c.storeFPResult(88, I64, "12"); err != nil {
+			t.Fatalf("storeFPResult(i64->ptr) error = %v", err)
+		}
+		if err := c.storeFPResult(96, I64, "13"); err != nil {
+			t.Fatalf("storeFPResult(i64->double) error = %v", err)
+		}
+		if err := c.storeFPResult(104, LLVMType("float"), "%f"); err != nil {
+			t.Fatalf("storeFPResult(float->float) error = %v", err)
+		}
+		if err := c.storeFPResult(112, I8, "15"); err != nil {
+			t.Fatalf("storeFPResult(i8->i16) error = %v", err)
+		}
+		if err := c.storeFPResult(96, LLVMType("double"), "%x"); err != nil {
+			t.Fatalf("storeFPResult(double->double) error = %v", err)
+		}
+		if err := c.storeFPResult(80, Ptr, "%x"); err == nil {
+			t.Fatalf("storeFPResult(ptr->i32) unexpectedly succeeded")
+		}
+
+		if got, err := c.loadFPResult(FrameSlot{Index: 0, Type: I32}); err != nil || got == "" {
+			t.Fatalf("loadFPResult() = (%q, %v)", got, err)
+		}
+		if _, err := c.loadFPResult(FrameSlot{Index: 99, Type: I32}); err == nil {
+			t.Fatalf("loadFPResult(missing) unexpectedly succeeded")
+		}
+	})
+
+	t.Run("ReturnHelpers", func(t *testing.T) {
+		if !isAMD64FloatRetTy(LLVMType("double")) || !isAMD64FloatRetTy(LLVMType("float")) || isAMD64FloatRetTy(I64) {
+			t.Fatalf("isAMD64FloatRetTy() mismatch")
+		}
+		if got, ok := c.retIntRegByOrd(1); !ok || got != BX {
+			t.Fatalf("retIntRegByOrd(1) = (%q, %v)", got, ok)
+		}
+		if _, ok := c.retIntRegByOrd(-1); ok {
+			t.Fatalf("retIntRegByOrd(-1) unexpectedly succeeded")
+		}
+	})
 
 	if err := c.storeReg(AX, "21"); err != nil {
 		t.Fatalf("storeReg(AX) error = %v", err)
@@ -1751,59 +1744,66 @@ func TestAMD64VectorAliasAndErrorCoverage(t *testing.T) {
 		t.Fatalf("VPERMI2B wrong mask reg = (%v, %v, %v)", ok, term, err)
 	}
 	for _, tc := range []struct {
-		op   Op
-		ins  Instr
-		want string
+		op          Op
+		ins         Instr
+		want        string
+		wantHandled bool
 	}{
-		{"VPOPCNTB", Instr{Raw: "VPOPCNTB Z0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst"},
-		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $3, Z0, Z1, K1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}}}, "bad imm"},
-		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $1, Z0, Z1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst reg"},
-		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, AX, Z1", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z1")}}}, "wrong mask"},
-		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, K1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst"},
-		{"VPXORQ", Instr{Raw: "VPXORQ Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong z dst"},
-		{"VPSHUFB", Instr{Raw: "VPSHUFB Y0, Y1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst"},
-		{"VPSHUFD", Instr{Raw: "VPSHUFD $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class"},
-		{"VPSLLD", Instr{Raw: "VPSLLD Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "short form"},
-		{"VPERM2I128", Instr{Raw: "VPERM2I128 $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst"},
-		{"VINSERTI128", Instr{Raw: "VINSERTI128 $1, X0, Y0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong dst"},
-		{"VMOVNTDQ", Instr{Raw: "VMOVNTDQ Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "bad dst"},
-		{"AESKEYGENASSIST", Instr{Raw: "AESKEYGENASSIST X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm"},
-		{"VPTEST", Instr{Raw: "VPTEST X0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class"},
-		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $1, 8(BX), X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("X0")}}}, "unsupported imm"},
-		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $0x0c, AX, X0", Args: []Operand{{Kind: OpImm, Imm: 0x0c}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "bad mem operand"},
-		{"VPBLENDD", Instr{Raw: "VPBLENDD $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst"},
-		{"VPBROADCASTB", Instr{Raw: "VPBROADCASTB Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "wrong src"},
-		{"VPSRLDQ", Instr{Raw: "VPSRLDQ $2, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class"},
-		{"PUNPCKLBW", Instr{Raw: "PUNPCKLBW Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class"},
-		{"PSHUFHW", Instr{Raw: "PSHUFHW $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst"},
-		{"SHUFPS", Instr{Raw: "SHUFPS $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst"},
-		{"MOVOU", Instr{Raw: "MOVOU AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class"},
-		{"MOVOU", Instr{Raw: "MOVOU X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class"},
-		{"PXOR", Instr{Raw: "PXOR X0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}}}, "short form"},
-		{"PADDL", Instr{Raw: "PADDL X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class"},
-		{"PSLLL", Instr{Raw: "PSLLL AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift"},
-		{"PCMPEQL", Instr{Raw: "PCMPEQL Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class"},
-		{"VPCLMULQDQ", Instr{Raw: "VPCLMULQDQ $1, Z0, Z1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst class"},
-		{"VPTERNLOGD", Instr{Raw: "VPTERNLOGD $0x95, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x95}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}}, "unsupported imm"},
-		{"VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong src class"},
-		{"PCLMULQDQ", Instr{Raw: "PCLMULQDQ AX, X0, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm"},
-		{"PCMPEQB", Instr{Raw: "PCMPEQB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class"},
-		{"PMOVMSKB", Instr{Raw: "PMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "wrong src class"},
-		{"PSHUFB", Instr{Raw: "PSHUFB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong mask class"},
-		{"PINSRQ", Instr{Raw: "PINSRQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "short form"},
-		{"PINSRD", Instr{Raw: "PINSRD $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class"},
-		{"PINSRW", Instr{Raw: "PINSRW $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class"},
-		{"PINSRB", Instr{Raw: "PINSRB $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class"},
-		{"PEXTRB", Instr{Raw: "PEXTRB AX, X0, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: BX}}}, "missing imm"},
-		{"PALIGNR", Instr{Raw: "PALIGNR $1, Y0, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class"},
-		{"PSRLDQ", Instr{Raw: "PSRLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm"},
-		{"PSLLDQ", Instr{Raw: "PSLLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm"},
-		{"PSRLQ", Instr{Raw: "PSRLQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift"},
-		{"PEXTRD", Instr{Raw: "PEXTRD $1, X0, label", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}, "bad dst kind"},
+		{"VPOPCNTB", Instr{Raw: "VPOPCNTB Z0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $3, Z0, Z1, K1", Args: []Operand{{Kind: OpImm, Imm: 3}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("K1")}}}, "bad imm", true},
+		{"VPCMPUQ", Instr{Raw: "VPCMPUQ $1, Z0, Z1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst reg", false},
+		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, AX, Z1", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Z1")}}}, "wrong mask", false},
+		{"VPCOMPRESSQ", Instr{Raw: "VPCOMPRESSQ Z0, K1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("K1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"VPXORQ", Instr{Raw: "VPXORQ Z0, Z1, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong z dst", true},
+		{"VPSHUFB", Instr{Raw: "VPSHUFB Y0, Y1, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: AX}}}, "wrong dst", false},
+		{"VPSHUFD", Instr{Raw: "VPSHUFD $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
+		{"VPSLLD", Instr{Raw: "VPSLLD Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "short form", true},
+		{"VPERM2I128", Instr{Raw: "VPERM2I128 $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst", false},
+		{"VINSERTI128", Instr{Raw: "VINSERTI128 $1, X0, Y0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong dst", false},
+		{"VMOVNTDQ", Instr{Raw: "VMOVNTDQ Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "bad dst", true},
+		{"AESKEYGENASSIST", Instr{Raw: "AESKEYGENASSIST X0, X1", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm", true},
+		{"VPTEST", Instr{Raw: "VPTEST X0, Y0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
+		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $1, 8(BX), X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpMem, Mem: MemRef{Base: BX, Off: 8}}, {Kind: OpReg, Reg: Reg("X0")}}}, "unsupported imm", true},
+		{"PCMPESTRI", Instr{Raw: "PCMPESTRI $0x0c, AX, X0", Args: []Operand{{Kind: OpImm, Imm: 0x0c}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "bad mem operand", true},
+		{"VPBLENDD", Instr{Raw: "VPBLENDD $1, Y0, Y1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst", false},
+		{"VPBROADCASTB", Instr{Raw: "VPBROADCASTB Y0, Y1", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("Y1")}}}, "wrong src", false},
+		{"VPSRLDQ", Instr{Raw: "VPSRLDQ $2, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 2}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong src class", false},
+		{"PUNPCKLBW", Instr{Raw: "PUNPCKLBW Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
+		{"PSHUFHW", Instr{Raw: "PSHUFHW $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"SHUFPS", Instr{Raw: "SHUFPS $1, X0, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst", false},
+		{"MOVOU", Instr{Raw: "MOVOU AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", true},
+		{"MOVOU", Instr{Raw: "MOVOU X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class", false},
+		{"PXOR", Instr{Raw: "PXOR X0", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}}}, "short form", true},
+		{"PADDL", Instr{Raw: "PADDL X0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: AX}}}, "wrong dst class", false},
+		{"PSLLL", Instr{Raw: "PSLLL AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift", true},
+		{"PCMPEQL", Instr{Raw: "PCMPEQL Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
+		{"VPCLMULQDQ", Instr{Raw: "VPCLMULQDQ $1, Z0, Z1, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong dst class", false},
+		{"VPTERNLOGD", Instr{Raw: "VPTERNLOGD $0x95, Z0, Z1, Z2", Args: []Operand{{Kind: OpImm, Imm: 0x95}, {Kind: OpReg, Reg: Reg("Z0")}, {Kind: OpReg, Reg: Reg("Z1")}, {Kind: OpReg, Reg: Reg("Z2")}}}, "unsupported imm", true},
+		{"VEXTRACTF32X4", Instr{Raw: "VEXTRACTF32X4 $1, X0, X1", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "wrong src class", false},
+		{"PCLMULQDQ", Instr{Raw: "PCLMULQDQ AX, X0, X1", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: Reg("X1")}}}, "missing imm", true},
+		{"PCMPEQB", Instr{Raw: "PCMPEQB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
+		{"PMOVMSKB", Instr{Raw: "PMOVMSKB Y0, AX", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: AX}}}, "wrong src class", false},
+		{"PSHUFB", Instr{Raw: "PSHUFB Y0, X0", Args: []Operand{{Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong mask class", true},
+		{"PINSRQ", Instr{Raw: "PINSRQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "short form", true},
+		{"PINSRD", Instr{Raw: "PINSRD $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
+		{"PINSRW", Instr{Raw: "PINSRW $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
+		{"PINSRB", Instr{Raw: "PINSRB $1, AX, Y0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("Y0")}}}, "wrong dst class", false},
+		{"PEXTRB", Instr{Raw: "PEXTRB AX, X0, BX", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpReg, Reg: BX}}}, "missing imm", true},
+		{"PALIGNR", Instr{Raw: "PALIGNR $1, Y0, X0", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("Y0")}, {Kind: OpReg, Reg: Reg("X0")}}}, "wrong src class", false},
+		{"PSRLDQ", Instr{Raw: "PSRLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
+		{"PSLLDQ", Instr{Raw: "PSLLDQ $17, X0", Args: []Operand{{Kind: OpImm, Imm: 17}, {Kind: OpReg, Reg: Reg("X0")}}}, "invalid imm", true},
+		{"PSRLQ", Instr{Raw: "PSRLQ AX, X0", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: Reg("X0")}}}, "non-imm shift", true},
+		{"PEXTRD", Instr{Raw: "PEXTRD $1, X0, label", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: Reg("X0")}, {Kind: OpIdent, Ident: "label"}}}, "bad dst kind", true},
 	} {
 		ok, term, err := c.lowerVec(tc.op, tc.ins)
-		if ok && err == nil {
-			t.Fatalf("%s %s unexpectedly succeeded (term=%v)", tc.op, tc.want, term)
+		if tc.wantHandled {
+			if !ok || err == nil {
+				t.Fatalf("%s %s = (%v, %v, %v), want handled error", tc.op, tc.want, ok, term, err)
+			}
+			continue
+		}
+		if ok || err != nil {
+			t.Fatalf("%s %s = (%v, %v, %v), want unhandled failure", tc.op, tc.want, ok, term, err)
 		}
 	}
 

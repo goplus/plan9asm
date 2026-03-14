@@ -528,7 +528,7 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		{
 			name: "unresolved-arm-imm",
 			file: &File{Arch: ArchARM, Funcs: []Func{{
-				Sym: "·armbad",
+				Sym:    "·armbad",
 				Instrs: []Instr{{Op: OpTEXT}, {Op: "MOVW", Args: []Operand{{Kind: OpImm, ImmRaw: "$(sym)"}, {Kind: OpReg, Reg: "R0"}}}, {Op: OpRET}},
 			}}},
 			opt: Options{ResolveSym: resolve, Sigs: map[string]FuncSig{"example.armbad": {Name: "example.armbad", Ret: Void}}},
@@ -536,7 +536,7 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		{
 			name: "arm-cfg",
 			file: &File{Arch: ArchARM, Funcs: []Func{{
-				Sym: "·armcfg",
+				Sym:    "·armcfg",
 				Instrs: []Instr{{Op: OpTEXT}, {Op: OpLABEL, Args: []Operand{{Kind: OpLabel, Sym: "loop"}}}, {Op: OpRET}},
 			}}},
 			opt: Options{ResolveSym: resolve, Sigs: map[string]FuncSig{"example.armcfg": {Name: "example.armcfg", Ret: Void}}},
@@ -544,7 +544,7 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		{
 			name: "arm64-cfg",
 			file: &File{Arch: ArchARM64, Funcs: []Func{{
-				Sym: "·arm64cfg",
+				Sym:    "·arm64cfg",
 				Instrs: []Instr{{Op: OpTEXT}, {Op: OpLABEL, Args: []Operand{{Kind: OpLabel, Sym: "loop"}}}, {Op: OpRET}},
 			}}},
 			opt: Options{ResolveSym: resolve, Goarch: "arm64", Sigs: map[string]FuncSig{"example.arm64cfg": {Name: "example.arm64cfg", Ret: Void}}},
@@ -552,7 +552,7 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 		{
 			name: "amd64-cfg",
 			file: &File{Arch: ArchAMD64, Funcs: []Func{{
-				Sym: "·amd64cfg",
+				Sym:    "·amd64cfg",
 				Instrs: []Instr{{Op: OpTEXT}, {Op: OpLABEL, Args: []Operand{{Kind: OpLabel, Sym: "loop"}}}, {Op: OpRET}},
 			}}},
 			opt: Options{ResolveSym: resolve, Goarch: "amd64", Sigs: map[string]FuncSig{"example.amd64cfg": {Name: "example.amd64cfg", Ret: I64}}},
@@ -564,8 +564,6 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 	}
 
 	ctx := llvm.GlobalContext()
-	mod := ctx.NewModule("direct-errors")
-	defer mod.Dispose()
 	for _, tc := range []struct {
 		name string
 		fn   Func
@@ -612,15 +610,19 @@ func TestTranslateModuleDirectErrorCoverage(t *testing.T) {
 			sig:  FuncSig{Name: "example.bad8", Ret: I64},
 		},
 	} {
-		if err := translateFuncLinearModule(mod, ArchAMD64, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
-			t.Fatalf("%s error = %v", tc.name, err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			mod := ctx.NewModule("direct-errors-" + tc.name)
+			defer mod.Dispose()
+			if err := translateFuncLinearModule(mod, ArchAMD64, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
+				t.Fatalf("%s error = %v", tc.name, err)
+			}
+		})
 	}
 
 	okMod := ctx.NewModule("direct-ok")
 	defer okMod.Dispose()
 	if err := translateFuncLinearModule(okMod, ArchAMD64, Func{
-		Sym: "example.byteok",
+		Sym:    "example.byteok",
 		Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}, {Op: OpBYTE}},
 	}, FuncSig{Name: "example.byteok", Ret: I64}); err != nil {
 		t.Fatalf("translateFuncLinearModule(byte-after-ret) error = %v", err)
@@ -888,7 +890,7 @@ func TestTranslateFuncLinearModuleSuccessCoverage(t *testing.T) {
 	mod3 := ctx.NewModule("direct-success-3")
 	defer mod3.Dispose()
 	err = translateFuncLinearModule(mod3, ArchAMD64, Func{
-		Sym: "example.zero",
+		Sym:    "example.zero",
 		Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}},
 	}, FuncSig{Name: "example.zero", Ret: I64})
 	if err != nil {
@@ -1042,7 +1044,7 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 					Sym: "·aggmem",
 					Instrs: []Instr{
 						{Op: OpTEXT, Raw: "TEXT ·aggmem(SB),NOSPLIT,$0-0"},
-				{Op: OpMOVQ, Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX}}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ (AX), AX"},
+						{Op: OpMOVQ, Args: []Operand{{Kind: OpMem, Mem: MemRef{Base: AX}}, {Kind: OpReg, Reg: AX}}, Raw: "MOVQ (AX), AX"},
 						{Op: OpRET, Raw: "RET"},
 					},
 				},
@@ -1085,7 +1087,7 @@ func TestTranslateFuncLinearCastAndErrorCoverage(t *testing.T) {
 						{Op: OpRET, Raw: "RET"},
 					},
 				},
-				sig: FuncSig{Name: "example.badadd", Ret: I64},
+				sig:     FuncSig{Name: "example.badadd", Ret: I64},
 				wantErr: "dst must be register",
 			},
 			{
@@ -1239,35 +1241,35 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			fn   Func
 			sig  FuncSig
 		}{
-				{
-					name: "UnresolvedImm",
-					fn: Func{
-						Sym: "badimm",
-						Instrs: []Instr{
-							{Op: OpTEXT},
-							{Op: OpMOVD, Args: []Operand{{Kind: OpImm, ImmRaw: "sym+4(SB)"}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $sym+4(SB), AX"},
-							{Op: OpRET},
-						},
+			{
+				name: "UnresolvedImm",
+				fn: Func{
+					Sym: "badimm",
+					Instrs: []Instr{
+						{Op: OpTEXT},
+						{Op: OpMOVD, Args: []Operand{{Kind: OpImm, ImmRaw: "sym+4(SB)"}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $sym+4(SB), AX"},
+						{Op: OpRET},
 					},
-					sig: FuncSig{Name: "example.badimm", Ret: I64},
 				},
-				{
-					name: "BadOperandKind",
-					fn: Func{
-						Sym: "badopkind",
-						Instrs: []Instr{
-							{Op: OpTEXT},
-							{Op: OpMOVD, Args: []Operand{{Kind: OpLabel, Sym: "target"}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD target, AX"},
-							{Op: OpRET},
-						},
+				sig: FuncSig{Name: "example.badimm", Ret: I64},
+			},
+			{
+				name: "BadOperandKind",
+				fn: Func{
+					Sym: "badopkind",
+					Instrs: []Instr{
+						{Op: OpTEXT},
+						{Op: OpMOVD, Args: []Operand{{Kind: OpLabel, Sym: "target"}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD target, AX"},
+						{Op: OpRET},
 					},
-					sig: FuncSig{Name: "example.badopkind", Ret: I64},
 				},
-				{
-					name: "BadRetType",
-					fn:   Func{Sym: "badret", Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}}},
-					sig:  FuncSig{Name: "example.badret", Ret: LLVMType("v2i64")},
-				},
+				sig: FuncSig{Name: "example.badopkind", Ret: I64},
+			},
+			{
+				name: "BadRetType",
+				fn:   Func{Sym: "badret", Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}}},
+				sig:  FuncSig{Name: "example.badret", Ret: LLVMType("v2i64")},
+			},
 			{
 				name: "BadArgType",
 				fn:   Func{Sym: "badarg", Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}}},
@@ -1337,7 +1339,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMRSArgs",
 				fn: Func{
-					Sym: "badmrs",
+					Sym:    "badmrs",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "MRS $1"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmrs", Ret: I64},
@@ -1345,7 +1347,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMRSKinds",
 				fn: Func{
-					Sym: "badmrskind",
+					Sym:    "badmrskind",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMRS, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MRS $1, AX"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmrskind", Ret: I64},
@@ -1353,7 +1355,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMOVDArgs",
 				fn: Func{
-					Sym: "badmovd",
+					Sym:    "badmovd",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "MOVD $1"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmovd", Ret: I64},
@@ -1361,7 +1363,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMOVDDst",
 				fn: Func{
-					Sym: "badmovddst",
+					Sym:    "badmovddst",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpIdent, Ident: "label"}}, Raw: "MOVD $1, label"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmovddst", Ret: I64},
@@ -1369,7 +1371,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMOVLArgs",
 				fn: Func{
-					Sym: "badmovl",
+					Sym:    "badmovl",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVL, Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "MOVL $1"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmovl", Ret: I64},
@@ -1377,7 +1379,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadMOVLDst",
 				fn: Func{
-					Sym: "badmovldst",
+					Sym:    "badmovldst",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVL, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpIdent, Ident: "label"}}, Raw: "MOVL $1, label"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badmovldst", Ret: I64},
@@ -1385,7 +1387,7 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadADDArgs",
 				fn: Func{
-					Sym: "badaddargs",
+					Sym:    "badaddargs",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpADDQ, Args: []Operand{{Kind: OpImm, Imm: 1}}, Raw: "ADDQ $1"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badaddargs", Ret: I64},
@@ -1393,39 +1395,39 @@ func TestTranslateFuncLinearModuleEdgeCoverage(t *testing.T) {
 			{
 				name: "BadADDDst",
 				fn: Func{
-					Sym: "badadddst",
+					Sym:    "badadddst",
 					Instrs: []Instr{{Op: OpTEXT}, {Op: OpADDQ, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpFP, FPOffset: 8}}, Raw: "ADDQ $1, ret+8(FP)"}, {Op: OpRET}},
 				},
 				sig: FuncSig{Name: "example.badadddst", Ret: I64},
 			},
-				{
-					name: "UnsupportedInstruction",
-					fn: Func{
-						Sym: "badop",
-						Instrs: []Instr{{Op: OpTEXT}, {Op: "NOP", Raw: "NOP"}, {Op: OpRET}},
-					},
-					sig: FuncSig{Name: "example.badop", Ret: I64},
+			{
+				name: "UnsupportedInstruction",
+				fn: Func{
+					Sym:    "badop",
+					Instrs: []Instr{{Op: OpTEXT}, {Op: "NOP", Raw: "NOP"}, {Op: OpRET}},
 				},
-				{
-					name: "InstructionAfterRET",
-					fn: Func{
-						Sym: "afterret",
-						Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $1, AX"}},
-					},
-					sig: FuncSig{Name: "example.afterret", Ret: I64},
+				sig: FuncSig{Name: "example.badop", Ret: I64},
+			},
+			{
+				name: "InstructionAfterRET",
+				fn: Func{
+					Sym:    "afterret",
+					Instrs: []Instr{{Op: OpTEXT}, {Op: OpRET}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $1, AX"}},
 				},
-				{
-					name: "NoRET",
-					fn: Func{
-						Sym: "noret",
-						Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $1, AX"}},
-					},
-					sig: FuncSig{Name: "example.noret", Ret: I64},
+				sig: FuncSig{Name: "example.afterret", Ret: I64},
+			},
+			{
+				name: "NoRET",
+				fn: Func{
+					Sym:    "noret",
+					Instrs: []Instr{{Op: OpTEXT}, {Op: OpMOVD, Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}, Raw: "MOVD $1, AX"}},
 				},
-			}
-			for _, tc := range cases {
-				t.Run(tc.name, func(t *testing.T) {
-					mod := ctx.NewModule("direct-" + tc.name)
+				sig: FuncSig{Name: "example.noret", Ret: I64},
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				mod := ctx.NewModule("direct-" + tc.name)
 				defer mod.Dispose()
 				if err := translateFuncLinearModule(mod, ArchAMD64, tc.fn, tc.sig); !errors.Is(err, errDirectModuleUnsupported) {
 					t.Fatalf("translateFuncLinearModule(%s) error = %v", tc.name, err)

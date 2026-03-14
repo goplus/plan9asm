@@ -15,20 +15,7 @@ func newARM64CtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[str
 		sigs = map[string]FuncSig{}
 	}
 	var b strings.Builder
-	c := newARM64Ctx(&b, fn, sig, func(sym string) string {
-		sym = goStripABISuffix(sym)
-		sym = strings.ReplaceAll(sym, "∕", "/")
-		if strings.HasPrefix(sym, "runtime·") {
-			return strings.ReplaceAll(sym, "·", ".")
-		}
-		if strings.HasPrefix(sym, "·") {
-			return "example." + strings.TrimPrefix(sym, "·")
-		}
-		if !strings.Contains(sym, "·") && !strings.Contains(sym, ".") && !strings.Contains(sym, "/") {
-			return "example." + sym
-		}
-		return strings.ReplaceAll(sym, "·", ".")
-	}, sigs, false)
+	c := newARM64Ctx(&b, fn, sig, testResolveSym("example"), sigs, false)
 	if err := c.emitEntryAllocasAndArgInit(); err != nil {
 		t.Fatalf("emitEntryAllocasAndArgInit() error = %v", err)
 	}
@@ -1062,8 +1049,8 @@ func TestARM64VectorEdgeCoverage(t *testing.T) {
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V3.D[1]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V3.D[1]")}})
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V4.S[1]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V4.S[1]")}})
 	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), V5.H[3]", Args: []Operand{arm64MemOp("R20", 0), arm64RegOp("V5.H[3]")}})
-	check("VLD1", true, Instr{Op: "VLD1.P (R20), [V6]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V6")}})
-	check("VLD1", true, Instr{Op: "VLD1.P (R20), [V7, V8, V9]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V7", "V8", "V9")}})
+	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V6]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V6")}})
+	check("VLD1", true, Instr{Op: "VLD1.P", Raw: "VLD1.P (R20), [V7, V8, V9]", Args: []Operand{arm64MemOp("R20", 0), arm64RegListOp("V7", "V8", "V9")}})
 	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V0], (R20)", Args: []Operand{arm64RegListOp("V0"), arm64MemOp("R20", 0)}})
 	check("VST1", true, Instr{Op: "VST1.P", Raw: "VST1.P [V1, V2, V3], (R20)", Args: []Operand{arm64RegListOp("V1", "V2", "V3"), arm64MemOp("R20", 0)}})
 

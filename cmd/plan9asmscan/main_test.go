@@ -389,6 +389,7 @@ func TestMainAndFatalfSubprocess(t *testing.T) {
 	}
 
 	outPath := filepath.Join(t.TempDir(), "report.json")
+	helperHome := t.TempDir()
 	oldArgs := os.Args
 	oldFlags := flag.CommandLine
 	defer func() {
@@ -410,14 +411,24 @@ func TestMainAndFatalfSubprocess(t *testing.T) {
 	}
 
 	cmd := exec.Command(testBin, "-test.run=TestMainAndFatalfSubprocess")
-	cmd.Env = append(os.Environ(), "PLAN9ASMSCAN_MAIN_HELPER=1")
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + helperHome,
+		"GOCACHE=" + filepath.Join(helperHome, "gocache"),
+		"PLAN9ASMSCAN_MAIN_HELPER=1",
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("main helper failed: %v\n%s", err, out)
 	}
 
 	fcmd := exec.Command(testBin, "-test.run=TestMainAndFatalfSubprocess")
-	fcmd.Env = append(os.Environ(), "PLAN9ASMSCAN_FATALF_HELPER=1")
+	fcmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + helperHome,
+		"GOCACHE=" + filepath.Join(helperHome, "gocache"),
+		"PLAN9ASMSCAN_FATALF_HELPER=1",
+	}
 	fout, err := fcmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("fatalf helper unexpectedly succeeded")

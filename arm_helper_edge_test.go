@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-var errTestSentinel = errors.New("sentinel")
-
 func newARMCtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[string]FuncSig) (*armCtx, *strings.Builder) {
 	t.Helper()
 	if sig.Name == "" {
@@ -17,20 +15,7 @@ func newARMCtxWithFuncForTest(t *testing.T, fn Func, sig FuncSig, sigs map[strin
 		sigs = map[string]FuncSig{}
 	}
 	var b strings.Builder
-	c := newARMCtx(&b, fn, sig, func(sym string) string {
-		sym = goStripABISuffix(sym)
-		sym = strings.ReplaceAll(sym, "∕", "/")
-		if strings.HasPrefix(sym, "runtime·") {
-			return strings.ReplaceAll(sym, "·", ".")
-		}
-		if strings.HasPrefix(sym, "·") {
-			return "example." + strings.TrimPrefix(sym, "·")
-		}
-		if !strings.Contains(sym, "·") && !strings.Contains(sym, ".") && !strings.Contains(sym, "/") {
-			return "example." + sym
-		}
-		return strings.ReplaceAll(sym, "·", ".")
-	}, sigs, false)
+	c := newARMCtx(&b, fn, sig, testResolveSym("example"), sigs, false)
 	if err := c.emitEntryAllocasAndArgInit(); err != nil {
 		t.Fatalf("emitEntryAllocasAndArgInit() error = %v", err)
 	}
@@ -293,6 +278,7 @@ func TestARMBranchAndSyscallExtraEdges(t *testing.T) {
 }
 
 func TestARMBranchExactErrorCoverage(t *testing.T) {
+	errTestSentinel := errors.New("sentinel")
 	mk := func(ret LLVMType) *armCtx {
 		c, _ := newARMCtxForTest(t, FuncSig{Name: "example.branch_exact", Ret: ret}, map[string]FuncSig{
 			"example.voidsink": {Name: "example.voidsink", Ret: Void},
