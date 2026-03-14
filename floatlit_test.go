@@ -44,3 +44,20 @@ func TestFormatLLVMFloat64LiteralSpecial(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatLLVMFloat64LiteralExactForms(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{1, "1.0e+00"},
+		{2.5, "2.5e+00"},
+		{-3, "-3.0e+00"},
+		{0, "0.0e+00"},
+	}
+	for _, tc := range cases {
+		if got := formatLLVMFloat64Literal(tc.in); got != tc.want {
+			t.Fatalf("formatLLVMFloat64Literal(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

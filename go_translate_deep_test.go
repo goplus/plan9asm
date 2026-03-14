@@ -1,0 +1,322 @@
+package plan9asm
+
+import (
+	"go/ast"
+	"go/constant"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"strings"
+	"testing"
+)
+
+func mustGoPackageWithImports(t *testing.T, pkgPath string, files map[string]string) GoPackage {
+	t.Helper()
+	fset := token.NewFileSet()
+	astFiles := make([]*ast.File, 0, len(files))
+	for name, src := range files {
+		f, err := parser.ParseFile(fset, name, src, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		astFiles = append(astFiles, f)
+	}
+	conf := types.Config{Importer: nil}
+	pkg, err := conf.Check(pkgPath, fset, astFiles, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return GoPackage{Path: pkgPath, Types: pkg, Syntax: astFiles}
+}
+
+func TestGoTranslateHelperCoverage(t *testing.T) {
+	if _, err := goArchFor("mips64"); err == nil {
+		t.Fatalf("goArchFor(mips64) unexpectedly succeeded")
+	}
+
+	for _, tc := range []struct {
+		in      string
+		base    string
+		off     int64
+		tail    bool
+		validOp Op
+	}{
+		{"name+8", "name", 8, false, ""},
+		{"name-4", "name", -4, false, ""},
+		{"plain", "plain", 0, false, ""},
+		{"target<>(SB)", "target<>", 0, false, "CALL"},
+	} {
+		if tc.validOp == "" {
+			gotBase, gotOff := goSplitSymPlusOff(tc.in)
+			if gotBase != tc.base || gotOff != tc.off {
+				t.Fatalf("goSplitSymPlusOff(%q) = (%q, %d), want (%q, %d)", tc.in, gotBase, gotOff, tc.base, tc.off)
+			}
+			continue
+		}
+		base, tail, ok := goReferencedFunc(Instr{Op: tc.validOp, Args: []Operand{{Kind: OpSym, Sym: tc.in}}})
+		if !ok || base != tc.base || tail != tc.tail {
+			t.Fatalf("goReferencedFunc(%q) = (%q, %v, %v)", tc.in, base, tail, ok)
+		}
+	}
+	for _, ins := range []Instr{
+		{Op: "MOVQ", Args: []Operand{{Kind: OpSym, Sym: "x(SB)"}}},
+		{Op: "CALL", Args: []Operand{{Kind: OpImm, Imm: 1}}},
+		{Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "x+4(SB)"}}},
+		{Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "x"}}},
+	} {
+		if _, _, ok := goReferencedFunc(ins); ok {
+			t.Fatalf("goReferencedFunc(%q) unexpectedly succeeded", ins.Op)
+		}
+	}
+
+	if fs, ok := goLookupManualSig(nil, "x"); ok || fs.Name != "" {
+		t.Fatalf("goLookupManualSig(nil) = (%v, %v)", fs, ok)
+	}
+	fs, ok := goLookupManualSig(func(resolved string) (FuncSig, bool) {
+		if resolved != "pkg.f" {
+			return FuncSig{}, false
+		}
+		return FuncSig{Ret: I64}, true
+	}, "pkg.f")
+	if !ok || fs.Name != "pkg.f" || fs.Ret != I64 {
+		t.Fatalf("goLookupManualSig() = (%v, %v)", fs, ok)
+	}
+
+	if got, err := goDeclNameForSymbol("·local", nil); err != nil || got != "local" {
+		t.Fatalf("goDeclNameForSymbol(local) = (%q, %v)", got, err)
+	}
+	if got, err := goDeclNameForSymbol("runtime·cmp", map[string]string{"runtime.cmp": "cmp"}); err != nil || got != "cmp" {
+		t.Fatalf("goDeclNameForSymbol(linkname) = (%q, %v)", got, err)
+	}
+	if _, err := goDeclNameForSymbol("runtime·cmp", nil); err == nil {
+		t.Fatalf("goDeclNameForSymbol(missing linkname) unexpectedly succeeded")
+	}
+
+	files := []*ast.File{
+		nil,
+		{Comments: []*ast.CommentGroup{{List: []*ast.Comment{
+			{Text: "//go:linkname local runtime.remote"},
+			{Text: "//go:linkname malformed"},
+		}}}},
+	}
+	links := goLinknameRemoteToLocal(files)
+	if links["runtime.remote"] != "local" {
+		t.Fatalf("goLinknameRemoteToLocal() = %#v", links)
+	}
+}
+
+func TestGoTranslateTypeCoverage(t *testing.T) {
+	word32 := types.Typ[types.Int]
+	namedObj := types.NewTypeName(token.NoPos, nil, "MyInt", nil)
+	named := types.NewNamed(namedObj, types.Typ[types.Int32], nil)
+	for _, tc := range []struct {
+		typ    types.Type
+		goarch string
+		want   LLVMType
+		ok     bool
+	}{
+		{types.Typ[types.Bool], "amd64", I1, true},
+		{types.Typ[types.UnsafePointer], "amd64", Ptr, true},
+		{types.Typ[types.Int8], "amd64", I8, true},
+		{types.Typ[types.Uint16], "amd64", I16, true},
+		{types.Typ[types.Int32], "amd64", I32, true},
+		{types.Typ[types.Uint64], "amd64", I64, true},
+		{word32, "arm", I32, true},
+		{types.Typ[types.Uintptr], "arm64", I64, true},
+		{types.Typ[types.Float32], "amd64", LLVMType("float"), true},
+		{types.Typ[types.Float64], "amd64", LLVMType("double"), true},
+		{types.Typ[types.String], "arm", LLVMType("{ ptr, i32 }"), true},
+		{types.NewPointer(types.Typ[types.Int]), "amd64", Ptr, true},
+		{types.NewSlice(types.Typ[types.Byte]), "arm64", LLVMType("{ ptr, i64, i64 }"), true},
+		{types.NewInterfaceType(nil, nil), "amd64", LLVMType("{ ptr, ptr }"), true},
+		{named, "amd64", I32, true},
+		{types.Typ[types.Complex64], "amd64", "", false},
+		{types.NewStruct(nil, nil), "amd64", "", false},
+	} {
+		got, err := goLLVMTypeForType(tc.typ, tc.goarch)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Fatalf("goLLVMTypeForType(%s,%s) = (%q, %v), want (%q, ok=%v)", tc.typ, tc.goarch, got, err, tc.want, tc.ok)
+		}
+	}
+
+	if parts, ok := goFramePartsForType(types.Typ[types.String], "amd64"); !ok || len(parts) != 2 || parts[1].Offset != 8 {
+		t.Fatalf("goFramePartsForType(string) = (%v, %v)", parts, ok)
+	}
+	if parts, ok := goFramePartsForType(types.NewSlice(types.Typ[types.Int]), "arm"); !ok || len(parts) != 3 || parts[2].Field != 2 {
+		t.Fatalf("goFramePartsForType(slice) = (%v, %v)", parts, ok)
+	}
+	if parts, ok := goFramePartsForType(types.NewInterfaceType(nil, nil), "amd64"); !ok || len(parts) != 2 {
+		t.Fatalf("goFramePartsForType(interface) = (%v, %v)", parts, ok)
+	}
+	if _, ok := goFramePartsForType(types.Typ[types.Int], "amd64"); ok {
+		t.Fatalf("goFramePartsForType(int) unexpectedly succeeded")
+	}
+
+	tup := types.NewTuple(
+		types.NewVar(token.NoPos, nil, "s", types.Typ[types.String]),
+		types.NewVar(token.NoPos, nil, "b", types.NewSlice(types.Typ[types.Byte])),
+		types.NewVar(token.NoPos, nil, "n", types.Typ[types.Int32]),
+	)
+	sz := types.SizesFor("gc", "arm64")
+	args, slots, next, err := goLLVMArgsAndFrameSlotsForTuple(tup, "arm64", sz, 8, false)
+	if err != nil || len(args) != 3 || len(slots) != 6 || next <= 8 {
+		t.Fatalf("goLLVMArgsAndFrameSlotsForTuple(flat=false) = (%v, %v, %d, %v)", args, slots, next, err)
+	}
+	args, slots, next, err = goLLVMArgsAndFrameSlotsForTuple(tup, "arm64", sz, 8, true)
+	if err != nil || len(args) != 6 || len(slots) != 6 || next <= 8 {
+		t.Fatalf("goLLVMArgsAndFrameSlotsForTuple(flat=true) = (%v, %v, %d, %v)", args, slots, next, err)
+	}
+
+	if goWordSize("arm") != 4 || goWordSize("arm64") != 8 {
+		t.Fatalf("goWordSize() mismatch")
+	}
+	if got := goAlignOff(5, 4); got != 8 {
+		t.Fatalf("goAlignOff(5,4) = %d", got)
+	}
+}
+
+func TestGoTranslateSignatureCoverage(t *testing.T) {
+	pkg := mustGoPackage(t, "test/pkg", `package testpkg
+type S struct{}
+func (S) Method(x int) int { return x }
+func Variadic(x ...int) {}
+func Plain(a string, b []byte, c any, d uintptr) (int, string) { return 0, "" }
+func helper(a int) int { return a }
+//go:linkname cmp runtime.cmp
+func cmp(a, b int) int { return a }
+`)
+	scope := pkg.Types.Scope()
+	plain := scope.Lookup("Plain").(*types.Func)
+	sig, err := goFuncSigForDeclaredFunc("test/pkg.Plain", plain, "arm64", types.SizesFor("gc", "arm64"), true)
+	if err != nil || sig.Ret == Void || len(sig.Frame.Params) == 0 || len(sig.Frame.Results) == 0 {
+		t.Fatalf("goFuncSigForDeclaredFunc(Plain) = (%v, %v)", sig, err)
+	}
+	variadic := scope.Lookup("Variadic").(*types.Func)
+	if _, err := goFuncSigForDeclaredFunc("test/pkg.Variadic", variadic, "amd64", types.SizesFor("gc", "amd64"), false); err == nil {
+		t.Fatalf("goFuncSigForDeclaredFunc(Variadic) unexpectedly succeeded")
+	}
+	named := scope.Lookup("S").Type().(*types.Named)
+	if _, err := goFuncSigForDeclaredFunc("test/pkg.Method", named.Method(0), "amd64", types.SizesFor("gc", "amd64"), false); err == nil {
+		t.Fatalf("goFuncSigForDeclaredFunc(Method) unexpectedly succeeded")
+	}
+
+	file := &File{
+		Arch: ArchARM64,
+		Funcs: []Func{
+			{Sym: "·Plain", Instrs: []Instr{{Op: OpTEXT}, {Op: "CALL", Args: []Operand{{Kind: OpSym, Sym: "runtime·cmp(SB)"}}}, {Op: OpRET}}},
+			{Sym: "localhelper<>", Instrs: []Instr{{Op: OpTEXT}, {Op: "B", Args: []Operand{{Kind: OpSym, Sym: "helper<>(SB)"}}}, {Op: OpRET}}},
+		},
+	}
+	sigs, err := goSigsForAsmFile(pkg, file, testResolveSym("test/pkg"), "arm64", func(resolved string) (FuncSig, bool) {
+		if resolved == "test/pkg.localhelper" {
+			return FuncSig{Name: resolved, Args: []LLVMType{I64}, Ret: I64}, true
+		}
+		return FuncSig{}, false
+	})
+	if err != nil {
+		t.Fatalf("goSigsForAsmFile() error = %v", err)
+	}
+	for _, want := range []string{"test/pkg.Plain", "runtime.cmp", "test/pkg.localhelper"} {
+		if _, ok := sigs[want]; !ok {
+			t.Fatalf("missing signature %q", want)
+		}
+	}
+
+	builder := goSigBuilder{
+		sigs:      map[string]FuncSig{},
+		scope:     scope,
+		sz:        types.SizesFor("gc", "arm64"),
+		linknames: map[string]string{"runtime.cmp": "cmp"},
+		pkgPath:   "test/pkg",
+		resolve:   testResolveSym("test/pkg"),
+		goarch:    "arm64",
+	}
+	if err := builder.addGoDeclSig("runtime·cmp"); err != nil {
+		t.Fatalf("addGoDeclSig(linkname) error = %v", err)
+	}
+	if err := builder.addGoDeclSig("·helper"); err != nil {
+		t.Fatalf("addGoDeclSig(local) error = %v", err)
+	}
+	if err := builder.addGoDeclSig("missing.remote"); err != nil {
+		t.Fatalf("addGoDeclSig(missing) error = %v", err)
+	}
+	if _, ok := builder.sigs["runtime.cmp"]; !ok {
+		t.Fatalf("addGoDeclSig(linkname) did not record runtime.cmp")
+	}
+
+	badPkg := mustGoPackage(t, "bad/pkg", `package badpkg
+var helper int
+`)
+	badBuilder := goSigBuilder{
+		sigs:    map[string]FuncSig{},
+		scope:   badPkg.Types.Scope(),
+		sz:      types.SizesFor("gc", "arm64"),
+		pkgPath: "bad/pkg",
+		resolve: testResolveSym("bad/pkg"),
+		goarch:  "arm64",
+	}
+	badFile := &File{Funcs: []Func{{Sym: "·helper"}}}
+	if err := badBuilder.addDeclaredFuncSigs(badFile); err == nil {
+		t.Fatalf("addDeclaredFuncSigs(non-func) unexpectedly succeeded")
+	}
+	if _, err := goSigsForAsmFile(pkg, file, testResolveSym("test/pkg"), "madeup", nil); err == nil {
+		t.Fatalf("goSigsForAsmFile(madeup) unexpectedly succeeded")
+	}
+}
+
+func TestTranslateGoModuleErrorCoverage(t *testing.T) {
+	pkg := mustGoPackage(t, "test/pkg", `package testpkg
+const Answer = 42
+func F(x int) int { return x }
+`)
+	if _, err := TranslateGoModule(GoPackage{}, nil, GoModuleOptions{GOARCH: "arm64"}); err == nil {
+		t.Fatalf("TranslateGoModule(empty pkg) unexpectedly succeeded")
+	}
+	if _, err := TranslateGoModule(GoPackage{Path: "x"}, nil, GoModuleOptions{GOARCH: "arm64"}); err == nil {
+		t.Fatalf("TranslateGoModule(missing types) unexpectedly succeeded")
+	}
+	if _, err := TranslateGoModule(pkg, nil, GoModuleOptions{}); err == nil {
+		t.Fatalf("TranslateGoModule(empty arch) unexpectedly succeeded")
+	}
+	if _, err := TranslateGoModule(pkg, []byte("TEXT ·F(SB"), GoModuleOptions{GOARCH: "arm64"}); err == nil {
+		t.Fatalf("TranslateGoModule(parse error) unexpectedly succeeded")
+	}
+	if _, err := TranslateGoModule(pkg, []byte(`TEXT ·F(SB),NOSPLIT,$0-0
+RET
+`), GoModuleOptions{
+		GOARCH: "arm64",
+		KeepFunc: func(textSym, resolved string) bool {
+			return false
+		},
+	}); err == nil || !strings.Contains(err.Error(), "empty file") {
+		t.Fatalf("TranslateGoModule(KeepFunc=false) error = %v", err)
+	}
+
+	tr, err := TranslateGoModule(pkg, []byte(`TEXT ·F(SB),NOSPLIT,$0-8
+MOVD $const_Answer, R0
+RET
+`), GoModuleOptions{
+		FileName:     "f_arm64.s",
+		GOARCH:       "arm64",
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		ResolveSym:   testResolveSym("test/pkg"),
+	})
+	if err != nil {
+		t.Fatalf("TranslateGoModule(const expansion) error = %v", err)
+	}
+	defer tr.Module.Dispose()
+	if len(tr.Functions) != 1 || tr.Signatures["test/pkg.F"].Name != "test/pkg.F" {
+		t.Fatalf("TranslateGoModule() returned unexpected metadata: %#v %#v", tr.Functions, tr.Signatures["test/pkg.F"])
+	}
+
+	pkgTypes := pkg.Types
+	imports := map[string]*types.Package{
+		"other/pkg": types.NewPackage("other/pkg", "other"),
+	}
+	cobj := types.NewConst(token.NoPos, imports["other/pkg"], "Limit", types.Typ[types.Int], constant.MakeInt64(7))
+	imports["other/pkg"].Scope().Insert(cobj)
+	expanded := string(goExpandConsts([]byte("MOVD other/pkg.Value+const_Limit(SB), R0\nMOVD $const_Answer, R1\n"), pkgTypes, imports))
+	if !strings.Contains(expanded, "other/pkg.Value+7(SB)") || !strings.Contains(expanded, "$42") {
+		t.Fatalf("goExpandConsts() = %q", expanded)
+	}
+}

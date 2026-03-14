@@ -3,7 +3,10 @@
 
 package plan9asm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestInferFuncTargetFeatures(t *testing.T) {
 	tests := []struct {
@@ -66,5 +69,39 @@ func TestInferFuncTargetFeatures(t *testing.T) {
 				t.Fatalf("inferFuncTargetFeatures(%q, %v) = %q, want %q", tt.arch, tt.ops, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFeatureAttrRegistry(t *testing.T) {
+	r := newFeatureAttrRegistry()
+	if got := r.ref(""); got != "" {
+		t.Fatalf("ref(\"\") = %q", got)
+	}
+	if got := r.ref("+aes"); got != "#200" {
+		t.Fatalf("ref(+aes) = %q", got)
+	}
+	if got := r.ref("+crc"); got != "#201" {
+		t.Fatalf("ref(+crc) = %q", got)
+	}
+	if got := r.ref("+aes"); got != "#200" {
+		t.Fatalf("ref(+aes repeat) = %q", got)
+	}
+
+	var b strings.Builder
+	r.emit(&b)
+	out := b.String()
+	for _, want := range []string{
+		`attributes #200 = { "target-features"="+aes" }`,
+		`attributes #201 = { "target-features"="+crc" }`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("emit() missing %q in:\n%s", want, out)
+		}
+	}
+
+	var empty strings.Builder
+	newFeatureAttrRegistry().emit(&empty)
+	if empty.String() != "" {
+		t.Fatalf("emit(empty) = %q", empty.String())
 	}
 }
