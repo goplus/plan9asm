@@ -7,21 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
-		t.Skip("host is not arm64")
-	}
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
 		t.Skip("llc not found")
 	}
+	const triple = "aarch64-unknown-linux-gnu"
 
-	goroot := runtime.GOROOT()
+	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_arm64.s"))
 	if err != nil {
 		t.Fatal(err)
@@ -55,9 +52,10 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 		},
 	}
 	ll, err := Translate(file, Options{
-		TargetTriple: testTargetTriple(runtime.GOOS, runtime.GOARCH),
+		TargetTriple: triple,
 		ResolveSym:   resolve,
 		Sigs:         sigs,
+		Goarch:       "arm64",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -69,9 +67,13 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(llc, "-filetype=obj", llPath, "-o", objPath)
+	cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("llc failed: %v\n%s", err, string(out))
+		s := string(out)
+		if llcUnsupportedTarget(s) {
+			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
+		}
+		t.Fatalf("llc failed: %v\n%s", err, s)
 	}
 }
