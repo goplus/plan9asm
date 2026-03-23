@@ -5,23 +5,18 @@ package plan9asm
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
-		t.Skip("host is not arm64")
-	}
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
 		t.Skip("llc not found")
 	}
 
-	goroot := runtime.GOROOT()
+	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -61,24 +56,49 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 		},
 	}
 	ll, err := Translate(file, Options{
-		TargetTriple: testTargetTriple(runtime.GOOS, runtime.GOARCH),
+		TargetTriple: arm64LinuxGNUTriple,
 		ResolveSym:   resolve,
 		Sigs:         sigs,
-		Goarch:       runtime.GOARCH,
+		Goarch:       "arm64",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tmp := t.TempDir()
-	llPath := filepath.Join(tmp, "dit.ll")
-	objPath := filepath.Join(tmp, "dit.o")
-	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "dit.ll", "dit.o", ll)
+}
+
+func TestTranslateGoModule_StdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
+	llc, _, ok := findLlcAndClang(t)
+	if !ok {
+		t.Skip("llc not found")
+	}
+
+	goroot := testGOROOT(t)
+	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("internal/runtime/sys/dit_arm64.s not present in this GOROOT")
+		}
 		t.Fatal(err)
 	}
-	cmd := exec.Command(llc, "-filetype=obj", llPath, "-o", objPath)
-	out, err := cmd.CombinedOutput()
+	pkg := mustGoPackage(t, "internal/runtime/sys", `package sys
+func EnableDIT() bool
+func DITEnabled() bool
+func DisableDIT()
+`)
+
+	tr, err := TranslateGoModule(pkg, src, GoModuleOptions{
+		FileName:     "dit_arm64.s",
+		GOOS:         "linux",
+		GOARCH:       "arm64",
+		TargetTriple: arm64LinuxGNUTriple,
+		ResolveSym:   testResolveSym("internal/runtime/sys"),
+	})
 	if err != nil {
-		t.Fatalf("llc failed: %v\n%s", err, string(out))
+		t.Fatal(err)
 	}
+	defer tr.Module.Dispose()
+
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "dit-gomod.ll", "dit-gomod.o", tr.Module.String())
 }

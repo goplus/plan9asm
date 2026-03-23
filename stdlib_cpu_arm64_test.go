@@ -5,25 +5,23 @@ package plan9asm
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
-		t.Skip("host is not arm64")
-	}
 	llc, _, ok := findLlcAndClang(t)
 	if !ok {
 		t.Skip("llc not found")
 	}
 
-	goroot := runtime.GOROOT()
+	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_arm64.s"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("internal/cpu/cpu_arm64.s not present in this GOROOT")
+		}
 		t.Fatal(err)
 	}
 
@@ -55,23 +53,14 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 		},
 	}
 	ll, err := Translate(file, Options{
-		TargetTriple: testTargetTriple(runtime.GOOS, runtime.GOARCH),
+		TargetTriple: arm64LinuxGNUTriple,
 		ResolveSym:   resolve,
 		Sigs:         sigs,
+		Goarch:       "arm64",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tmp := t.TempDir()
-	llPath := filepath.Join(tmp, "cpu.ll")
-	objPath := filepath.Join(tmp, "cpu.o")
-	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(llc, "-filetype=obj", llPath, "-o", objPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("llc failed: %v\n%s", err, string(out))
-	}
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "cpu.ll", "cpu.o", ll)
 }
