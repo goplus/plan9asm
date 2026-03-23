@@ -5,7 +5,6 @@ package plan9asm
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +15,6 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 	if !ok {
 		t.Skip("llc not found")
 	}
-	const triple = "aarch64-unknown-linux-gnu"
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
@@ -58,7 +56,7 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 		},
 	}
 	ll, err := Translate(file, Options{
-		TargetTriple: triple,
+		TargetTriple: arm64LinuxGNUTriple,
 		ResolveSym:   resolve,
 		Sigs:         sigs,
 		Goarch:       "arm64",
@@ -67,21 +65,7 @@ func TestStdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tmp := t.TempDir()
-	llPath := filepath.Join(tmp, "dit.ll")
-	objPath := filepath.Join(tmp, "dit.o")
-	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		s := string(out)
-		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
-		}
-		t.Fatalf("llc failed: %v\n%s", err, s)
-	}
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "dit.ll", "dit.o", ll)
 }
 
 func TestTranslateGoModule_StdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) {
@@ -89,7 +73,6 @@ func TestTranslateGoModule_StdlibInternalRuntimeSys_ARM64_Compile(t *testing.T) 
 	if !ok {
 		t.Skip("llc not found")
 	}
-	const triple = "aarch64-unknown-linux-gnu"
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "runtime", "sys", "dit_arm64.s"))
@@ -109,7 +92,7 @@ func DisableDIT()
 		FileName:     "dit_arm64.s",
 		GOOS:         "linux",
 		GOARCH:       "arm64",
-		TargetTriple: triple,
+		TargetTriple: arm64LinuxGNUTriple,
 		ResolveSym:   testResolveSym("internal/runtime/sys"),
 	})
 	if err != nil {
@@ -117,40 +100,5 @@ func DisableDIT()
 	}
 	defer tr.Module.Dispose()
 
-	tmp := t.TempDir()
-	llPath := filepath.Join(tmp, "dit-gomod.ll")
-	objPath := filepath.Join(tmp, "dit-gomod.o")
-	if err := os.WriteFile(llPath, []byte(tr.Module.String()), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		s := string(out)
-		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
-		}
-		t.Fatalf("llc failed: %v\n%s", err, s)
-	}
-}
-
-func testGOROOT(t *testing.T) string {
-	t.Helper()
-	goroot := os.Getenv("GOROOT")
-	if goroot == "" {
-		goroot = testGoEnv(t, "GOROOT")
-	}
-	if goroot == "" {
-		t.Skip("GOROOT not available")
-	}
-	return goroot
-}
-
-func testGoEnv(t *testing.T, key string) string {
-	t.Helper()
-	out, err := exec.Command("go", "env", key).CombinedOutput()
-	if err != nil {
-		t.Fatalf("go env %s failed: %v\n%s", key, err, string(out))
-	}
-	return strings.TrimSpace(string(out))
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "dit-gomod.ll", "dit-gomod.o", tr.Module.String())
 }

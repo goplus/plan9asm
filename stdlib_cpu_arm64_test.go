@@ -5,7 +5,6 @@ package plan9asm
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,11 +15,13 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 	if !ok {
 		t.Skip("llc not found")
 	}
-	const triple = "aarch64-unknown-linux-gnu"
 
 	goroot := testGOROOT(t)
 	src, err := os.ReadFile(filepath.Join(goroot, "src", "internal", "cpu", "cpu_arm64.s"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("internal/cpu/cpu_arm64.s not present in this GOROOT")
+		}
 		t.Fatal(err)
 	}
 
@@ -52,7 +53,7 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 		},
 	}
 	ll, err := Translate(file, Options{
-		TargetTriple: triple,
+		TargetTriple: arm64LinuxGNUTriple,
 		ResolveSym:   resolve,
 		Sigs:         sigs,
 		Goarch:       "arm64",
@@ -61,19 +62,5 @@ func TestStdlibInternalCPU_ARM64_Compile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tmp := t.TempDir()
-	llPath := filepath.Join(tmp, "cpu.ll")
-	objPath := filepath.Join(tmp, "cpu.o")
-	if err := os.WriteFile(llPath, []byte(ll), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(llc, "-mtriple="+triple, "-filetype=obj", llPath, "-o", objPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		s := string(out)
-		if llcUnsupportedTarget(s) {
-			t.Skipf("llc does not support triple %q: %s", triple, strings.TrimSpace(s))
-		}
-		t.Fatalf("llc failed: %v\n%s", err, s)
-	}
+	compileLLVMToObject(t, llc, arm64LinuxGNUTriple, "cpu.ll", "cpu.o", ll)
 }
