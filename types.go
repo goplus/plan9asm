@@ -160,6 +160,9 @@ const (
 	ShiftRotate ShiftOp = "@>"
 )
 
+// ExtendOp is an ARM64 register-extension modifier (for example UXTB, SXTW).
+// The prefix U/S selects zero- or sign-extension; the suffix B/H/W/X selects
+// the source width (8/16/32/64 bits).
 type ExtendOp string
 
 const (
@@ -182,10 +185,10 @@ const (
 type Operand struct {
 	Kind OperandKind
 
-	Imm    int64  // OpImm
-	ImmRaw string // OpImm unresolved symbolic placeholder, including leading '$'
-	Reg    Reg    // OpReg
-	Ext    ExtendOp
+	Imm    int64    // OpImm
+	ImmRaw string   // OpImm unresolved symbolic placeholder, including leading '$'
+	Reg    Reg      // OpReg
+	Ext    ExtendOp // OpRegExtend
 	// OpRegShift
 	ShiftOp     ShiftOp
 	ShiftAmount int64
@@ -611,10 +614,11 @@ func parseRegExtend(s string) (Reg, ExtendOp, bool) {
 	if !ok {
 		return "", "", false
 	}
-	switch ExtendOp(strings.ToUpper(strings.TrimSpace(s[dot+1:]))) {
+	ext := ExtendOp(strings.ToUpper(strings.TrimSpace(s[dot+1:])))
+	switch ext {
 	case ExtendUXTB, ExtendUXTH, ExtendUXTW, ExtendUXTX,
 		ExtendSXTB, ExtendSXTH, ExtendSXTW, ExtendSXTX:
-		return r, ExtendOp(strings.ToUpper(strings.TrimSpace(s[dot+1:]))), true
+		return r, ext, true
 	default:
 		return "", "", false
 	}
