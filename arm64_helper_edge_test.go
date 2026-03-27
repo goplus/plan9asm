@@ -1485,6 +1485,14 @@ func TestARM64EvalCoverage(t *testing.T) {
 	ops := []Operand{
 		{Kind: OpImm, Imm: 7},
 		{Kind: OpReg, Reg: "R0"},
+		{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTB},
+		{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTH},
+		{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTW},
+		{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTX},
+		{Kind: OpRegExtend, Reg: "R3", Ext: ExtendSXTB},
+		{Kind: OpRegExtend, Reg: "R3", Ext: ExtendSXTH},
+		{Kind: OpRegExtend, Reg: "R3", Ext: ExtendSXTW},
+		{Kind: OpRegExtend, Reg: "R3", Ext: ExtendSXTX},
 		{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftLeft, ShiftAmount: 2},
 		{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftRight, ShiftAmount: 1},
 		{Kind: OpFP, FPOffset: 0},
@@ -1513,6 +1521,9 @@ func TestARM64EvalCoverage(t *testing.T) {
 	}
 	if _, err := c.eval64(Operand{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftRotate, ShiftReg: "R2"}, false); err == nil {
 		t.Fatalf("eval64(register shift) unexpectedly succeeded")
+	}
+	if _, err := c.eval64(Operand{Kind: OpRegExtend, Reg: "R1", Ext: ExtendOp("BAD")}, false); err == nil {
+		t.Fatalf("eval64(bad extension) unexpectedly succeeded")
 	}
 	if _, err := c.eval64(Operand{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftRotate, ShiftAmount: 1}, false); err == nil {
 		t.Fatalf("eval64(rotate) unexpectedly succeeded")

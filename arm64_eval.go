@@ -137,6 +137,12 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 		return c.imm64(op.Imm), nil
 	case OpReg:
 		return c.loadReg(op.Reg)
+	case OpRegExtend:
+		v, err := c.loadReg(op.Reg)
+		if err != nil {
+			return "", err
+		}
+		return c.extendReg64(v, op.Ext)
 	case OpRegShift:
 		v, err := c.loadReg(op.Reg)
 		if err != nil {
@@ -189,6 +195,38 @@ func (c *arm64Ctx) eval64(op Operand, postInc bool) (string, error) {
 	default:
 		return "", fmt.Errorf("arm64: unsupported operand for i64: %s", op.String())
 	}
+}
+
+func (c *arm64Ctx) extendReg64(v string, ext ExtendOp) (string, error) {
+	switch ext {
+	case ExtendUXTX, ExtendSXTX:
+		return v, nil
+	}
+
+	var fromTy string
+	var extOp string
+	switch ext {
+	case ExtendUXTB:
+		fromTy, extOp = "i8", "zext"
+	case ExtendUXTH:
+		fromTy, extOp = "i16", "zext"
+	case ExtendUXTW:
+		fromTy, extOp = "i32", "zext"
+	case ExtendSXTB:
+		fromTy, extOp = "i8", "sext"
+	case ExtendSXTH:
+		fromTy, extOp = "i16", "sext"
+	case ExtendSXTW:
+		fromTy, extOp = "i32", "sext"
+	default:
+		return "", fmt.Errorf("arm64: unsupported register extension %q", ext)
+	}
+
+	tr := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v, fromTy)
+	ex := c.newTmp()
+	fmt.Fprintf(c.b, "  %%%s = %s %s %%%s to i64\n", ex, extOp, fromTy, tr)
+	return "%" + ex, nil
 }
 
 func (c *arm64Ctx) evalFPValue64(op Operand) (string, error) {
