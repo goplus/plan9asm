@@ -140,6 +140,7 @@ const (
 	OpInvalid OperandKind = iota
 	OpImm
 	OpReg
+	OpRegExtend
 	OpRegShift
 	OpFP
 	OpFPAddr
@@ -159,6 +160,19 @@ const (
 	ShiftRotate ShiftOp = "@>"
 )
 
+type ExtendOp string
+
+const (
+	ExtendUXTB ExtendOp = "UXTB"
+	ExtendUXTH ExtendOp = "UXTH"
+	ExtendUXTW ExtendOp = "UXTW"
+	ExtendUXTX ExtendOp = "UXTX"
+	ExtendSXTB ExtendOp = "SXTB"
+	ExtendSXTH ExtendOp = "SXTH"
+	ExtendSXTW ExtendOp = "SXTW"
+	ExtendSXTX ExtendOp = "SXTX"
+)
+
 // Operand models a minimal subset of Plan 9 asm operands.
 //
 // Supported:
@@ -171,6 +185,7 @@ type Operand struct {
 	Imm    int64  // OpImm
 	ImmRaw string // OpImm unresolved symbolic placeholder, including leading '$'
 	Reg    Reg    // OpReg
+	Ext    ExtendOp
 	// OpRegShift
 	ShiftOp     ShiftOp
 	ShiftAmount int64
@@ -210,6 +225,8 @@ func (o Operand) String() string {
 		return fmt.Sprintf("$%d", o.Imm)
 	case OpReg:
 		return string(o.Reg)
+	case OpRegExtend:
+		return fmt.Sprintf("%s.%s", o.Reg, o.Ext)
 	case OpRegShift:
 		suffix := fmt.Sprintf("%d", o.ShiftAmount)
 		if o.ShiftReg != "" {
@@ -516,6 +533,9 @@ func parseOperand(s string) (Operand, error) {
 	if name, off, ok := parseFPAddr(s); ok {
 		return Operand{Kind: OpFPAddr, FPName: name, FPOffset: off}, nil
 	}
+	if r, ext, ok := parseRegExtend(s); ok {
+		return Operand{Kind: OpRegExtend, Reg: r, Ext: ext}, nil
+	}
 	if base, sop, amt, shiftReg, ok := parseRegShift(s); ok {
 		return Operand{Kind: OpRegShift, Reg: base, ShiftOp: sop, ShiftAmount: amt, ShiftReg: shiftReg}, nil
 	}
@@ -576,6 +596,28 @@ func parseOperand(s string) (Operand, error) {
 		return Operand{Kind: OpIdent, Ident: ident}, nil
 	}
 	return Operand{}, fmt.Errorf("unsupported operand: %q", s)
+}
+
+func parseRegExtend(s string) (Reg, ExtendOp, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false
+	}
+	dot := strings.LastIndexByte(s, '.')
+	if dot <= 0 || dot == len(s)-1 {
+		return "", "", false
+	}
+	r, ok := parseReg(s[:dot])
+	if !ok {
+		return "", "", false
+	}
+	switch ExtendOp(strings.ToUpper(strings.TrimSpace(s[dot+1:]))) {
+	case ExtendUXTB, ExtendUXTH, ExtendUXTW, ExtendUXTX,
+		ExtendSXTB, ExtendSXTH, ExtendSXTW, ExtendSXTX:
+		return r, ExtendOp(strings.ToUpper(strings.TrimSpace(s[dot+1:]))), true
+	default:
+		return "", "", false
+	}
 }
 
 func parseRegShift(s string) (base Reg, sop ShiftOp, amt int64, shiftReg Reg, ok bool) {

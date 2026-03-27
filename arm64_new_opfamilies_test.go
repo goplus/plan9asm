@@ -78,3 +78,26 @@ TEXT featureprobe(SB),NOSPLIT,$0-0
 		t.Fatal(err)
 	}
 }
+
+func TestTranslateARM64CompareWithExtendedRegister(t *testing.T) {
+	src := `
+TEXT countcmp(SB),NOSPLIT,$0-0
+	CMP	R2.UXTB, R5
+	CINC	EQ, R11, R11
+	RET
+`
+	file, err := Parse(ArchARM64, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Translate(file, Options{
+		TargetTriple: "aarch64-unknown-linux-gnu",
+		Sigs: map[string]FuncSig{
+			"countcmp": {Name: "countcmp", Ret: Void},
+		},
+		Goarch: "arm64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

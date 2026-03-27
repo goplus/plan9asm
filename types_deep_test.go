@@ -10,6 +10,7 @@ func TestTypeHelperCoverage(t *testing.T) {
 		{Operand{Kind: OpImm, Imm: 7}, "$7"},
 		{Operand{Kind: OpImm, ImmRaw: "$(A+1)"}, "$(A+1)"},
 		{Operand{Kind: OpReg, Reg: AX}, "AX"},
+		{Operand{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTB}, "R2.UXTB"},
 		{Operand{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftLeft, ShiftAmount: 2}, "R1<<2"},
 		{Operand{Kind: OpRegShift, Reg: "R2", ShiftOp: ShiftRight, ShiftReg: "R3"}, "R2>>R3"},
 		{Operand{Kind: OpFP, FPName: "arg", FPOffset: 8}, "arg+8(FP)"},
@@ -203,11 +204,18 @@ func TestTypeParserEdgeCoverage(t *testing.T) {
 		{"MIDR_EL1", OpIdent},
 		{"helper<>(SB)", OpSym},
 		{"R1@>2", OpRegShift},
+		{"R2.UXTB", OpRegExtend},
 	} {
 		op, err := parseOperand(tc.in)
 		if err != nil || op.Kind != tc.want {
 			t.Fatalf("parseOperand(%q) = (%v, %v), want kind %v", tc.in, err, op.Kind, tc.want)
 		}
+	}
+	if reg, ext, ok := parseRegExtend("r3.sxtw"); !ok || reg != "R3" || ext != ExtendSXTW {
+		t.Fatalf("parseRegExtend(r3.sxtw) = (%q, %q, %v)", reg, ext, ok)
+	}
+	if _, _, ok := parseRegExtend("R2.BAD"); ok {
+		t.Fatalf("parseRegExtend(R2.BAD) unexpectedly succeeded")
 	}
 	if _, err := parseOperand("[]"); err == nil {
 		t.Fatalf("parseOperand([]) unexpectedly succeeded")

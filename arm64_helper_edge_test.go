@@ -1485,6 +1485,8 @@ func TestARM64EvalCoverage(t *testing.T) {
 	ops := []Operand{
 		{Kind: OpImm, Imm: 7},
 		{Kind: OpReg, Reg: "R0"},
+		{Kind: OpRegExtend, Reg: "R2", Ext: ExtendUXTB},
+		{Kind: OpRegExtend, Reg: "R3", Ext: ExtendSXTW},
 		{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftLeft, ShiftAmount: 2},
 		{Kind: OpRegShift, Reg: "R1", ShiftOp: ShiftRight, ShiftAmount: 1},
 		{Kind: OpFP, FPOffset: 0},
