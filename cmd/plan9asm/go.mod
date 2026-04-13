@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/goplus/llvm v0.8.6 // indirect
+	github.com/goplus/llvm v0.8.7 // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 )
