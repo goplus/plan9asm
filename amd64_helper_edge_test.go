@@ -569,6 +569,7 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("ANDQ", Instr{Raw: "ANDQ $4, AX", Args: []Operand{{Kind: OpImm, Imm: 4}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ORQ", Instr{Raw: "ORQ $5, AX", Args: []Operand{{Kind: OpImm, Imm: 5}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADCQ", Instr{Raw: "ADCQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
+	mustLower("ADCB", Instr{Raw: "ADCB $1, AL", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AL}}})
 	mustLower("SBBQ", Instr{Raw: "SBBQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADCXQ", Instr{Raw: "ADCXQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
 	mustLower("ADOXQ", Instr{Raw: "ADOXQ $1, AX", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AX}}})
@@ -706,6 +707,39 @@ func TestAMD64SetGEUsesSignedFlag(t *testing.T) {
 		"store i1 false, ptr %flags_slt",
 		"load i1, ptr %flags_slt",
 		"xor i1 %",
+		"shl i64",
+		"or i64",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestAMD64ADCBUsesCarryFlag(t *testing.T) {
+	c, b := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.adcb", Ret: Void}, nil)
+	if err := c.storeReg(AX, "4660"); err != nil {
+		t.Fatalf("storeReg(AX) error = %v", err)
+	}
+	b.WriteString("  store i1 true, ptr " + c.flagsCFSlot + "\n")
+
+	for _, ins := range []Instr{
+		{Raw: "ADCB $1, AL", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AL}}},
+		{Raw: "ADCB $1, AH", Args: []Operand{{Kind: OpImm, Imm: 1}, {Kind: OpReg, Reg: AH}}},
+	} {
+		if ok, term, err := c.lowerArith("ADCB", ins); !ok || term || err != nil {
+			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
+		}
+	}
+
+	out := b.String()
+	for _, want := range []string{
+		"store i1 true, ptr %flags_cf",
+		"load i1, ptr %flags_cf",
+		"zext i1 %",
+		"add i8",
+		"zext i8",
+		"icmp ugt i16",
 		"shl i64",
 		"or i64",
 	} {

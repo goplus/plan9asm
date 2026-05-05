@@ -387,6 +387,85 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		c.setZSFlagsFromI64(out)
 		return true, false, nil
 
+	case "ADCB":
+		// 8-bit add with carry: src, dstReg/mem.
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 %s expects src, dst: %q", op, ins.Raw)
+		}
+		var d8 string
+		var storeDst func(string) error
+		switch ins.Args[1].Kind {
+		case OpReg:
+			dst := ins.Args[1].Reg
+			dv64, err := c.loadReg(dst)
+			if err != nil {
+				return true, false, err
+			}
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, dv64)
+			d8 = "%" + t
+			storeDst = func(v8 string) error {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i64\n", z, v8)
+				return c.storeReg(dst, "%"+z)
+			}
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[1].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i8, ptr %s, align 1\n", ld, p)
+			d8 = "%" + ld
+			storeDst = func(v8 string) error {
+				fmt.Fprintf(c.b, "  store i8 %s, ptr %s, align 1\n", v8, p)
+				return nil
+			}
+		default:
+			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
+		}
+
+		s8, err := c.evalIntSized(ins.Args[0], I8)
+		if err != nil {
+			return true, false, err
+		}
+		cfIn := c.loadFlag(c.flagsCFSlot)
+		cf8t := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i1 %s to i8\n", cf8t, cfIn)
+		cf8 := "%" + cf8t
+
+		sum := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i8 %s, %s\n", sum, d8, s8)
+		res := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i8 %%%s, %s\n", res, sum, cf8)
+		out8 := "%" + res
+		if err := storeDst(out8); err != nil {
+			return true, false, err
+		}
+
+		d16 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", d16, d8)
+		s16 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", s16, s8)
+		cf16 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i16\n", cf16, cf8)
+		total1 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i16 %%%s, %%%s\n", total1, d16, s16)
+		total2 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i16 %%%s, %%%s\n", total2, total1, cf16)
+		cf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ugt i16 %%%s, 255\n", cf, total2)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		fmt.Fprintf(c.b, "  store i1 false, ptr %s\n", c.flagsOFSlot)
+		zf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i8 %%%s, 0\n", zf, res)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", zf, c.flagsZSlot)
+		sf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp slt i8 %%%s, 0\n", sf, res)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", sf, c.flagsSltSlot)
+		return true, false, nil
+
 	case "ADCXQ", "ADOXQ":
 		// BMI2 add-with-carry chains.
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
