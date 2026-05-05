@@ -469,31 +469,44 @@ func amd64ValueAsI64(c *amd64Ctx, ty LLVMType, v string) (out string, ok bool, e
 	}
 }
 
-func (c *amd64Ctx) loadReg(r Reg) (string, error) {
-	// Model low-byte aliases used by stdlib asm.
-	// We treat writes/reads of AL/BL/CL/DL as operating on the full AX/BX/CX/DX,
-	// returning the masked low byte as a zero-extended i64.
-	alias := func(rr Reg) (base Reg, mask int64, ok bool) {
-		switch rr {
-		case AL:
-			return AX, 0xff, true
-		case BL:
-			return BX, 0xff, true
-		case CL:
-			return CX, 0xff, true
-		case DL:
-			return DX, 0xff, true
-		default:
-			return "", 0, false
-		}
+func amd64ByteAlias(rr Reg) (base Reg, shift uint, ok bool) {
+	switch rr {
+	case AL:
+		return AX, 0, true
+	case AH:
+		return AX, 8, true
+	case BL:
+		return BX, 0, true
+	case BH:
+		return BX, 8, true
+	case CL:
+		return CX, 0, true
+	case CH:
+		return CX, 8, true
+	case DL:
+		return DX, 0, true
+	case DH:
+		return DX, 8, true
+	default:
+		return "", 0, false
 	}
-	if base, mask, ok := alias(r); ok {
+}
+
+func (c *amd64Ctx) loadReg(r Reg) (string, error) {
+	// Model byte aliases used by stdlib asm. Reads return the selected byte as a
+	// zero-extended i64.
+	if base, shift, ok := amd64ByteAlias(r); ok {
 		v, err := c.loadReg(base)
 		if err != nil {
 			return "", err
 		}
+		if shift != 0 {
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", t, v, shift)
+			v = "%" + t
+		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", t, v, mask)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", t, v)
 		return "%" + t, nil
 	}
 	slot, ok := c.regSlot[r]
@@ -506,16 +519,27 @@ func (c *amd64Ctx) loadReg(r Reg) (string, error) {
 }
 
 func (c *amd64Ctx) storeReg(r Reg, v string) error {
-	// See loadReg for alias handling.
-	switch r {
-	case AL:
-		r = AX
-	case BL:
-		r = BX
-	case CL:
-		r = CX
-	case DL:
-		r = DX
+	// See loadReg for byte-alias handling.
+	if base, shift, ok := amd64ByteAlias(r); ok {
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		mask := int64(0xff) << shift
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^mask)
+		byteVal := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", byteVal, v)
+		ins := "%" + byteVal
+		if shift != 0 {
+			shifted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n", shifted, byteVal, shift)
+			ins = "%" + shifted
+		}
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", merged, cleared, ins)
+		r = base
+		v = "%" + merged
 	}
 	slot, ok := c.regSlot[r]
 	if !ok {

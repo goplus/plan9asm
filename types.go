@@ -32,9 +32,13 @@ const (
 	PC Reg = "PC"
 
 	AL Reg = "AL"
+	AH Reg = "AH"
 	BL Reg = "BL"
+	BH Reg = "BH"
 	CL Reg = "CL"
+	CH Reg = "CH"
 	DL Reg = "DL"
+	DH Reg = "DH"
 
 	ZR Reg = "ZR"
 )
@@ -78,12 +82,20 @@ func parseReg(s string) (Reg, bool) {
 		return PC, true
 	case "AL":
 		return AL, true
+	case "AH":
+		return AH, true
 	case "BL":
 		return BL, true
+	case "BH":
+		return BH, true
 	case "CL":
 		return CL, true
+	case "CH":
+		return CH, true
 	case "DL":
 		return DL, true
+	case "DH":
+		return DH, true
 	case "ZR":
 		return ZR, true
 	case "G":

@@ -599,7 +599,8 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
 	mustLower("SETHI", Instr{Raw: "SETHI BX", Args: []Operand{{Kind: OpReg, Reg: BX}}})
-	mustLower("SETCS", Instr{Raw: "SETCS AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
+	mustLower("SETCS", Instr{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}})
+	mustLower("SETCS", Instr{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
 	mustLower("CMOVQEQ", Instr{Raw: "CMOVQEQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("CMOVQNE", Instr{Raw: "CMOVQNE CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("CMOVQCS", Instr{Raw: "CMOVQCS CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
@@ -659,14 +660,18 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 
 func TestAMD64SetCSUsesCarryFlag(t *testing.T) {
 	c, b := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.setcs", Ret: Void}, nil)
-	if err := c.storeReg(AX, "0"); err != nil {
+	if err := c.storeReg(AX, "4660"); err != nil {
 		t.Fatalf("storeReg(AX) error = %v", err)
 	}
 	b.WriteString("  store i1 true, ptr " + c.flagsCFSlot + "\n")
 
-	ins := Instr{Raw: "SETCS AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}
-	if ok, term, err := c.lowerArith("SETCS", ins); !ok || term || err != nil {
-		t.Fatalf("lowerArith(SETCS) = (%v, %v, %v)", ok, term, err)
+	for _, ins := range []Instr{
+		{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}},
+		{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}},
+	} {
+		if ok, term, err := c.lowerArith("SETCS", ins); !ok || term || err != nil {
+			t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
+		}
 	}
 
 	out := b.String()
@@ -674,6 +679,8 @@ func TestAMD64SetCSUsesCarryFlag(t *testing.T) {
 		"store i1 true, ptr %flags_cf",
 		"load i1, ptr %flags_cf",
 		"select i1 %",
+		"shl i64",
+		"or i64",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
@@ -1878,7 +1885,7 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 			t.Fatalf("storeReg(%s) error = %v", tc.r, err)
 		}
 	}
-	for _, r := range []Reg{AL, BL, CL, DL} {
+	for _, r := range []Reg{AL, AH, BL, BH, CL, CH, DL, DH} {
 		if got, err := c.loadReg(r); err != nil || got == "" {
 			t.Fatalf("loadReg(%s) = (%q, %v)", r, got, err)
 		}
@@ -1891,9 +1898,13 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 		v string
 	}{
 		{AL, "17"},
+		{AH, "33"},
 		{BL, "18"},
+		{BH, "34"},
 		{CL, "19"},
+		{CH, "35"},
 		{DL, "20"},
+		{DH, "36"},
 	} {
 		if err := c.storeReg(tc.r, tc.v); err != nil {
 			t.Fatalf("storeReg(%s) error = %v", tc.r, err)
@@ -1944,6 +1955,9 @@ func TestAMD64CtxAliasAndFPFallbackCoverage(t *testing.T) {
 	out := b.String()
 	for _, want := range []string{
 		"and i64",
+		"lshr i64",
+		"shl i64",
+		"or i64",
 		"zext i1",
 		"zext i8",
 		"zext i16",
