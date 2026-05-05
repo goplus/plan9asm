@@ -661,13 +661,35 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		return true, false, nil
 
 	case "INCQ", "DECQ":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects reg: %q", op, ins.Raw)
+		if len(ins.Args) != 1 {
+			return true, false, fmt.Errorf("amd64 %s expects dst: %q", op, ins.Raw)
 		}
-		r := ins.Args[0].Reg
-		v, err := c.loadReg(r)
-		if err != nil {
-			return true, false, err
+		var v string
+		var storeDst func(string) error
+		switch ins.Args[0].Kind {
+		case OpReg:
+			r := ins.Args[0].Reg
+			dv, err := c.loadReg(r)
+			if err != nil {
+				return true, false, err
+			}
+			v = dv
+			storeDst = func(out string) error { return c.storeReg(r, out) }
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
+			v = "%" + ld
+			storeDst = func(out string) error {
+				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", out, p)
+				return nil
+			}
+		default:
+			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}
 		t := c.newTmp()
 		if op == "INCQ" {
@@ -676,32 +698,60 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			fmt.Fprintf(c.b, "  %%%s = sub i64 %s, 1\n", t, v)
 		}
 		out := "%" + t
-		if err := c.storeReg(r, out); err != nil {
+		if err := storeDst(out); err != nil {
 			return true, false, err
 		}
 		c.setZSFlagsFromI64(out)
 		return true, false, nil
 
 	case "INCL", "DECL":
-		if len(ins.Args) != 1 || ins.Args[0].Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 %s expects reg: %q", op, ins.Raw)
+		if len(ins.Args) != 1 {
+			return true, false, fmt.Errorf("amd64 %s expects dst: %q", op, ins.Raw)
 		}
-		r := ins.Args[0].Reg
-		v64, err := c.loadReg(r)
-		if err != nil {
-			return true, false, err
+		var v64 string
+		var storeDst func(string) error
+		switch ins.Args[0].Kind {
+		case OpReg:
+			r := ins.Args[0].Reg
+			dv, err := c.loadReg(r)
+			if err != nil {
+				return true, false, err
+			}
+			v64 = dv
+			storeDst = func(out32 string) error {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", z, out32)
+				return c.storeReg(r, "%"+z)
+			}
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[0].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
+			v64 = "%" + ld
+			storeDst = func(out32 string) error {
+				fmt.Fprintf(c.b, "  store i32 %s, ptr %s, align 1\n", out32, p)
+				return nil
+			}
+		default:
+			return true, false, fmt.Errorf("amd64 %s expects reg/mem dst: %q", op, ins.Raw)
 		}
 		tr := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
+		if ins.Args[0].Kind == OpMem {
+			fmt.Fprintf(c.b, "  %%%s = add i32 0, %s\n", tr, v64)
+		} else {
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
+		}
 		x := c.newTmp()
 		if op == "INCL" {
 			fmt.Fprintf(c.b, "  %%%s = add i32 %%%s, 1\n", x, tr)
 		} else {
 			fmt.Fprintf(c.b, "  %%%s = sub i32 %%%s, 1\n", x, tr)
 		}
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, x)
-		if err := c.storeReg(r, "%"+z); err != nil {
+		if err := storeDst("%" + x); err != nil {
 			return true, false, err
 		}
 		c.setZSFlagsFromI32("%" + x)
