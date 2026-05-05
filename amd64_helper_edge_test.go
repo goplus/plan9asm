@@ -599,6 +599,7 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
 	mustLower("SETHI", Instr{Raw: "SETHI BX", Args: []Operand{{Kind: OpReg, Reg: BX}}})
+	mustLower("SETCS", Instr{Raw: "SETCS AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("CMOVQEQ", Instr{Raw: "CMOVQEQ CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("CMOVQNE", Instr{Raw: "CMOVQNE CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
 	mustLower("CMOVQCS", Instr{Raw: "CMOVQCS CX, AX", Args: []Operand{{Kind: OpReg, Reg: CX}, {Kind: OpReg, Reg: AX}}})
@@ -649,6 +650,30 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 		"ptrtoint ptr @\"example.global\" to i64",
 		"store i8",
 		"ashr i64",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestAMD64SetCSUsesCarryFlag(t *testing.T) {
+	c, b := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.setcs", Ret: Void}, nil)
+	if err := c.storeReg(AX, "0"); err != nil {
+		t.Fatalf("storeReg(AX) error = %v", err)
+	}
+	b.WriteString("  store i1 true, ptr " + c.flagsCFSlot + "\n")
+
+	ins := Instr{Raw: "SETCS AX", Args: []Operand{{Kind: OpReg, Reg: AX}}}
+	if ok, term, err := c.lowerArith("SETCS", ins); !ok || term || err != nil {
+		t.Fatalf("lowerArith(SETCS) = (%v, %v, %v)", ok, term, err)
+	}
+
+	out := b.String()
+	for _, want := range []string{
+		"store i1 true, ptr %flags_cf",
+		"load i1, ptr %flags_cf",
+		"select i1 %",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in output:\n%s", want, out)
