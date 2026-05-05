@@ -785,7 +785,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		return true, false, fmt.Errorf("amd64: unsupported bit op %s", op)
 
-	case "SETEQ", "SETGT", "SETHI", "SETCS":
+	case "SETEQ", "SETGT", "SETGE", "SETHI", "SETCS":
 		// SETcc dst: set byte based on flags.
 		// We support register destinations and FP result slots.
 		if len(ins.Args) != 1 {
@@ -804,6 +804,11 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			t2 := c.newTmp()
 			fmt.Fprintf(c.b, "  %%%s = xor i1 %%%s, true\n", t2, t1)
 			cond = "%" + t2
+		case "SETGE":
+			slt := c.loadFlag(c.flagsSltSlot)
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = xor i1 %s, true\n", t, slt)
+			cond = "%" + t
 		case "SETHI":
 			// unsigned >
 			cf := c.loadFlag(c.flagsCFSlot)

@@ -598,6 +598,7 @@ func TestAMD64ArithmeticCoverage(t *testing.T) {
 	mustLower("BSRL", Instr{Raw: "BSRL AX, DI", Args: []Operand{{Kind: OpReg, Reg: AX}, {Kind: OpReg, Reg: DI}}})
 	mustLower("SETEQ", Instr{Raw: "SETEQ AX", Args: []Operand{{Kind: OpReg, Reg: AX}}})
 	mustLower("SETGT", Instr{Raw: "SETGT ret+8(FP)", Args: []Operand{{Kind: OpFP, FPOffset: 8}}})
+	mustLower("SETGE", Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
 	mustLower("SETHI", Instr{Raw: "SETHI BX", Args: []Operand{{Kind: OpReg, Reg: BX}}})
 	mustLower("SETCS", Instr{Raw: "SETCS AL", Args: []Operand{{Kind: OpReg, Reg: AL}}})
 	mustLower("SETCS", Instr{Raw: "SETCS AH", Args: []Operand{{Kind: OpReg, Reg: AH}}})
@@ -679,6 +680,32 @@ func TestAMD64SetCSUsesCarryFlag(t *testing.T) {
 		"store i1 true, ptr %flags_cf",
 		"load i1, ptr %flags_cf",
 		"select i1 %",
+		"shl i64",
+		"or i64",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestAMD64SetGEUsesSignedFlag(t *testing.T) {
+	c, b := newAMD64CtxWithFuncForTest(t, Func{}, FuncSig{Name: "example.setge", Ret: Void}, nil)
+	if err := c.storeReg(AX, "4660"); err != nil {
+		t.Fatalf("storeReg(AX) error = %v", err)
+	}
+	b.WriteString("  store i1 false, ptr " + c.flagsSltSlot + "\n")
+
+	ins := Instr{Raw: "SETGE AH", Args: []Operand{{Kind: OpReg, Reg: AH}}}
+	if ok, term, err := c.lowerArith("SETGE", ins); !ok || term || err != nil {
+		t.Fatalf("lowerArith(%s) = (%v, %v, %v)", ins.Raw, ok, term, err)
+	}
+
+	out := b.String()
+	for _, want := range []string{
+		"store i1 false, ptr %flags_slt",
+		"load i1, ptr %flags_slt",
+		"xor i1 %",
 		"shl i64",
 		"or i64",
 	} {
