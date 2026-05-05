@@ -20,8 +20,8 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 		switch Op(op) {
 		case "JMP",
 			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS",
+			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
+			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
 			"JNC", "JC", "JCC":
 		default:
 			return 0, false
@@ -49,8 +49,8 @@ func amd64SplitBlocks(fn Func) []amd64Block {
 		switch Op(op) {
 		case "JMP",
 			"JE", "JEQ", "JZ", "JNE", "JNZ",
-			"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS",
+			"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
+			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS", "JLS", "JNA",
 			"JNC", "JC", "JCC":
 			return true
 		default:

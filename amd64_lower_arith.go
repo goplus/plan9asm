@@ -405,9 +405,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", t, dv64)
 			d8 = "%" + t
 			storeDst = func(v8 string) error {
-				z := c.newTmp()
-				fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i64\n", z, v8)
-				return c.storeReg(dst, "%"+z)
+				return c.storeRegSized(dst, I8, v8)
 			}
 		case OpMem:
 			addr, err := c.addrFromMem(ins.Args[1].Mem)
@@ -600,7 +598,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		return true, false, nil
 
 	case "ADDB", "XORB", "ANDB", "ORB":
-		// 8-bit scalar ops: src, dstReg (stored in low 8 bits of dst reg).
+		// 8-bit scalar ops: src, dstReg (stored in the selected byte lane).
 		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
 			return true, false, fmt.Errorf("amd64 %s expects src, dstReg: %q", op, ins.Raw)
 		}
@@ -637,9 +635,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		case "ORB":
 			fmt.Fprintf(c.b, "  %%%s = or i8 %%%s, %s\n", x, d8, s8)
 		}
-		z := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = zext i8 %%%s to i64\n", z, x)
-		if err := c.storeReg(dst, "%"+z); err != nil {
+		if err := c.storeRegSized(dst, I8, "%"+x); err != nil {
 			return true, false, err
 		}
 		if op == "ADDB" {
@@ -798,6 +794,26 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.ctpop.i64(i64 %s)\n", call, srcv)
 		return true, false, c.storeReg(dst, "%"+call)
 
+	case "TZCNTQ":
+		// TZCNTQ srcReg, dstReg.
+		if len(ins.Args) != 2 || ins.Args[0].Kind != OpReg || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 TZCNTQ expects srcReg, dstReg: %q", ins.Raw)
+		}
+		srcv, err := c.loadReg(ins.Args[0].Reg)
+		if err != nil {
+			return true, false, err
+		}
+		call := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = call i64 @llvm.cttz.i64(i64 %s, i1 false)\n", call, srcv)
+		if err := c.storeReg(ins.Args[1].Reg, "%"+call); err != nil {
+			return true, false, err
+		}
+		cf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", cf, srcv)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		c.setZSFlagsFromI64("%" + call)
+		return true, false, nil
+
 	case "BSFQ", "BSRQ", "BSWAPQ", "BSFL", "BSRL":
 		// Bit scan/byte swap ops (reg, reg).
 		src := Reg("")
@@ -917,8 +933,8 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		switch ins.Args[0].Kind {
 		case OpReg:
 			sel := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i64 1, i64 0\n", sel, cond)
-			return true, false, c.storeReg(ins.Args[0].Reg, "%"+sel)
+			fmt.Fprintf(c.b, "  %%%s = select i1 %s, i8 1, i8 0\n", sel, cond)
+			return true, false, c.storeRegSized(ins.Args[0].Reg, I8, "%"+sel)
 		case OpFP:
 			return true, false, c.storeFPResult(ins.Args[0].FPOffset, I1, cond)
 		default:
@@ -1001,7 +1017,85 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, a)
 		return true, false, c.storeReg(dst, "%"+z)
 
-	case "SHRQ", "SHLQ", "SARQ", "SHLL", "SHRL", "SALQ", "SALL":
+	case "BEXTRQ":
+		// BMI1 bit field extract: control, src, dst.
+		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 BEXTRQ expects control, src, dstReg: %q", ins.Raw)
+		}
+		ctrl, err := c.evalI64(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		src, err := c.evalI64(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		start := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", start, ctrl)
+		lenShift := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, 8\n", lenShift, ctrl)
+		length := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 255\n", length, lenShift)
+		startOK := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, 64\n", startOK, start)
+		safeStart := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 63\n", safeStart, startOK, start)
+		shifted := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %%%s\n", shifted, src, safeStart)
+		rawLen := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 0\n", rawLen, startOK, length)
+		remain := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = sub i64 64, %%%s\n", remain, safeStart)
+		useRawLen := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %%%s, %%%s\n", useRawLen, rawLen, remain)
+		effLen := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 %%%s\n", effLen, useRawLen, rawLen, remain)
+		isFull := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %%%s, 64\n", isFull, effLen)
+		safeLen := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 63\n", safeLen, effLen)
+		one := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %%%s\n", one, safeLen)
+		maskTmp := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, -1\n", maskTmp, one)
+		mask := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 -1, i64 %%%s\n", mask, isFull, maskTmp)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, %%%s\n", out, shifted, mask)
+		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
+
+	case "BZHIQ":
+		// BMI2 zero high bits: index, src, dst.
+		if len(ins.Args) != 3 || ins.Args[2].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 BZHIQ expects index, src, dstReg: %q", ins.Raw)
+		}
+		idx, err := c.evalI64(ins.Args[0])
+		if err != nil {
+			return true, false, err
+		}
+		src, err := c.evalI64(ins.Args[1])
+		if err != nil {
+			return true, false, err
+		}
+		valid := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, 64\n", valid, idx)
+		isZero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp eq i64 %s, 0\n", isZero, idx)
+		safeIdx := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", safeIdx, idx)
+		one := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %%%s\n", one, safeIdx)
+		maskTmp := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = add i64 %%%s, -1\n", maskTmp, one)
+		maskOrZero := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 0, i64 %%%s\n", maskOrZero, isZero, maskTmp)
+		mask := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %%%s, i64 -1\n", mask, valid, maskOrZero)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %%%s\n", out, src, mask)
+		return true, false, c.storeReg(ins.Args[2].Reg, "%"+out)
+
+	case "SHRQ", "SHLQ", "SARQ", "SHLL", "SHRL", "SARL", "SALQ", "SALL":
 		// Shift ops:
 		// - 2-operand: amt, dst (in-place)
 		// - 3-operand: amt, src, dst
@@ -1025,7 +1119,7 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		}
 		amtMask := int64(63)
 		valTy := I64
-		if op == "SHLL" || op == "SHRL" || op == "SALL" {
+		if op == "SHLL" || op == "SHRL" || op == "SARL" || op == "SALL" {
 			amtMask = 31
 			valTy = I32
 		}
@@ -1066,12 +1160,53 @@ func (c *amd64Ctx) lowerArith(op Op, ins Instr) (ok bool, terminated bool, err e
 		sh := c.newTmp()
 		if op == "SHLL" || op == "SALL" {
 			fmt.Fprintf(c.b, "  %%%s = shl i32 %%%s, %%%s\n", sh, tr, amt32)
+		} else if op == "SARL" {
+			fmt.Fprintf(c.b, "  %%%s = ashr i32 %%%s, %%%s\n", sh, tr, amt32)
 		} else {
 			fmt.Fprintf(c.b, "  %%%s = lshr i32 %%%s, %%%s\n", sh, tr, amt32)
 		}
 		z := c.newTmp()
 		fmt.Fprintf(c.b, "  %%%s = zext i32 %%%s to i64\n", z, sh)
 		return true, false, c.storeReg(dst, "%"+z)
+
+	case "SHLB":
+		// 8-bit logical left shift: amt, dstReg.
+		if len(ins.Args) != 2 || ins.Args[1].Kind != OpReg {
+			return true, false, fmt.Errorf("amd64 SHLB expects amt, dstReg: %q", ins.Raw)
+		}
+		dst := ins.Args[1].Reg
+		dv64, err := c.loadReg(dst)
+		if err != nil {
+			return true, false, err
+		}
+		d8 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i8\n", d8, dv64)
+		var amt string
+		switch ins.Args[0].Kind {
+		case OpImm:
+			amt = fmt.Sprintf("%d", ins.Args[0].Imm&31)
+		case OpReg:
+			av, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			m := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 31\n", m, av)
+			amt = "%" + m
+		default:
+			return true, false, fmt.Errorf("amd64 SHLB unsupported shift amt: %q", ins.Raw)
+		}
+		inRange := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ult i64 %s, 8\n", inRange, amt)
+		safeAmt := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i64 %s, i64 7\n", safeAmt, inRange, amt)
+		amt8 := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = trunc i64 %%%s to i8\n", amt8, safeAmt)
+		sh := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i8 %%%s, %%%s\n", sh, d8, amt8)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = select i1 %%%s, i8 %%%s, i8 0\n", out, inRange, sh)
+		return true, false, c.storeRegSized(dst, I8, "%"+out)
 
 	case "SHLXQ", "SHRXQ":
 		// BMI2 variable shifts: amt, src, dst.

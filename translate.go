@@ -278,8 +278,8 @@ func emitExternSBGlobals(b *strings.Builder, file *File, resolve func(string) st
 					// control-flow ops that use symbol operands as branch/call targets.
 					switch opName {
 					case "JMP", "JE", "JEQ", "JZ", "JNE", "JNZ",
-						"JL", "JLT", "JLE", "JG", "JGT", "JGE",
-						"JB", "JBE", "JA", "JAE", "JLS",
+						"JL", "JLT", "JLE", "JG", "JGT", "JGE", "JS", "JNS",
+						"JB", "JBE", "JA", "JAE", "JLS", "JNA",
 						"JC", "JNC", "JCC", "CALL", "BL", "B":
 						continue
 					}

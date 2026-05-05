@@ -13,7 +13,7 @@ func funcNeedsAMD64CFG(fn Func) bool {
 		switch Op(op) {
 		case "JMP", "JL", "JLT", "JLE", "JG", "JGT", "JGE",
 			"JB", "JLO", "JBE", "JA", "JHI", "JAE", "JHS",
-			"JZ", "JE", "JEQ", "JNZ", "JNE", "JNC", "JC", "JCC", "JLS":
+			"JZ", "JE", "JEQ", "JNZ", "JNE", "JNC", "JC", "JCC", "JLS", "JNA", "JS", "JNS":
 			return true
 		}
 		// A handful of amd64 stdlib asm functions are straight-line, but if we

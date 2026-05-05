@@ -7,7 +7,7 @@ import (
 
 func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err error) {
 	switch op {
-	case "MOVQ", "MOVD", "MOVL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVB", "MOVW", "CMOVQLT":
+	case "MOVQ", "MOVD", "MOVL", "MOVLQZX", "MOVLQSX", "MOVBQZX", "MOVBLZX", "MOVB", "MOVW", "MOVWLZX", "MOVWQZX", "MOVWQSX", "CMOVQLT":
 		// ok
 	default:
 		return false, false, nil
@@ -16,32 +16,47 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		return true, false, fmt.Errorf("amd64 %s expects 2 operands: %q", op, ins.Raw)
 	}
 	src, dst := ins.Args[0], ins.Args[1]
+	zeroExtendSmallDst := false
 	if op == "MOVLQZX" {
 		op = "MOVL"
 	}
 	if op == "MOVD" {
 		op = "MOVQ"
 	}
-	if op == "MOVBQZX" {
+	if op == "MOVBQZX" || op == "MOVBLZX" {
 		op = "MOVB"
+		zeroExtendSmallDst = true
 	}
-	if op == "MOVLQSX" {
-		// Sign-extend i32 source to i64 destination register.
+	if op == "MOVWQZX" || op == "MOVWLZX" {
+		op = "MOVW"
+		zeroExtendSmallDst = true
+	}
+	if op == "MOVLQSX" || op == "MOVWQSX" {
+		// Sign-extend i32/i16 source to i64 destination register.
 		if dst.Kind != OpReg {
-			return true, false, fmt.Errorf("amd64 MOVLQSX expects dst reg: %q", ins.Raw)
+			return true, false, fmt.Errorf("amd64 %s expects dst reg: %q", op, ins.Raw)
 		}
-		var i32v string
+		srcTy := I32
+		if op == "MOVWQSX" {
+			srcTy = I16
+		}
+		var sv string
 		switch src.Kind {
 		case OpImm:
-			i32v = fmt.Sprintf("%d", int32(src.Imm))
+			switch srcTy {
+			case I16:
+				sv = fmt.Sprintf("%d", int16(src.Imm))
+			default:
+				sv = fmt.Sprintf("%d", int32(src.Imm))
+			}
 		case OpReg, OpFP:
 			v64, err := c.evalI64(src)
 			if err != nil {
 				return true, false, err
 			}
 			tr := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to i32\n", tr, v64)
-			i32v = "%" + tr
+			fmt.Fprintf(c.b, "  %%%s = trunc i64 %s to %s\n", tr, v64, srcTy)
+			sv = "%" + tr
 		case OpMem:
 			addr, err := c.addrFromMem(src.Mem)
 			if err != nil {
@@ -49,21 +64,21 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 			}
 			p := c.ptrFromAddrI64(addr)
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
-			i32v = "%" + ld
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, srcTy, p)
+			sv = "%" + ld
 		case OpSym:
 			p, err := c.ptrFromSB(src.Sym)
 			if err != nil {
 				return true, false, err
 			}
 			ld := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = load i32, ptr %s, align 1\n", ld, p)
-			i32v = "%" + ld
+			fmt.Fprintf(c.b, "  %%%s = load %s, ptr %s, align 1\n", ld, srcTy, p)
+			sv = "%" + ld
 		default:
-			return true, false, fmt.Errorf("amd64 MOVLQSX unsupported src: %q", ins.Raw)
+			return true, false, fmt.Errorf("amd64 %s unsupported src: %q", op, ins.Raw)
 		}
 		se := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = sext i32 %s to i64\n", se, i32v)
+		fmt.Fprintf(c.b, "  %%%s = sext %s %s to i64\n", se, srcTy, sv)
 		return true, false, c.storeReg(dst.Reg, "%"+se)
 	}
 
@@ -152,9 +167,12 @@ func (c *amd64Ctx) lowerMov(op Op, ins Instr) (ok bool, terminated bool, err err
 		}
 		switch dst.Kind {
 		case OpReg:
-			z := c.newTmp()
-			fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", z, widthTy, small)
-			return true, false, c.storeReg(dst.Reg, "%"+z)
+			if zeroExtendSmallDst {
+				z := c.newTmp()
+				fmt.Fprintf(c.b, "  %%%s = zext %s %s to i64\n", z, widthTy, small)
+				return true, false, c.storeReg(dst.Reg, "%"+z)
+			}
+			return true, false, c.storeRegSized(dst.Reg, widthTy, small)
 		case OpFP:
 			return true, false, c.storeFPResult(dst.FPOffset, widthTy, small)
 		case OpMem:

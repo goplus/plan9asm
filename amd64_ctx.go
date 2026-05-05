@@ -492,6 +492,39 @@ func amd64ByteAlias(rr Reg) (base Reg, shift uint, ok bool) {
 	}
 }
 
+func amd64FullRegBase(r Reg) (Reg, bool) {
+	if base, _, ok := amd64ByteAlias(r); ok {
+		return base, true
+	}
+	if r == "" || r == PC || r == ZR {
+		return "", false
+	}
+	if _, ok := amd64ParseXReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseYReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseZReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseKReg(r); ok {
+		return "", false
+	}
+	return r, true
+}
+
+func amd64ByteRegBase(r Reg) (base Reg, shift uint, ok bool) {
+	if base, shift, ok := amd64ByteAlias(r); ok {
+		return base, shift, true
+	}
+	base, ok = amd64FullRegBase(r)
+	if !ok {
+		return "", 0, false
+	}
+	return base, 0, true
+}
+
 func (c *amd64Ctx) loadReg(r Reg) (string, error) {
 	// Model byte aliases used by stdlib asm. Reads return the selected byte as a
 	// zero-extended i64.
@@ -547,6 +580,66 @@ func (c *amd64Ctx) storeReg(r Reg, v string) error {
 	}
 	fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, slot)
 	return nil
+}
+
+func (c *amd64Ctx) storeRegSized(r Reg, ty LLVMType, v string) error {
+	switch ty {
+	case I8:
+		base, shift, ok := amd64ByteRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i8 store: %s", r)
+		}
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		mask := int64(0xff) << shift
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^mask)
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i64\n", ext, v)
+		ins := "%" + ext
+		if shift != 0 {
+			shifted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n", shifted, ext, shift)
+			ins = "%" + shifted
+		}
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", merged, cleared, ins)
+		return c.storeReg(base, "%"+merged)
+	case I16:
+		base, ok := amd64FullRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i16 store: %s", r)
+		}
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^int64(0xffff))
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i64\n", ext, v)
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", merged, cleared, ext)
+		return c.storeReg(base, "%"+merged)
+	case I32:
+		base, ok := amd64FullRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i32 store: %s", r)
+		}
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", ext, v)
+		return c.storeReg(base, "%"+ext)
+	case I64:
+		base, ok := amd64FullRegBase(r)
+		if ok {
+			return c.storeReg(base, v)
+		}
+		return c.storeReg(r, v)
+	default:
+		return fmt.Errorf("unsupported sized reg store %s to %s", ty, r)
+	}
 }
 
 func (c *amd64Ctx) loadX(r Reg) (string, error) {
