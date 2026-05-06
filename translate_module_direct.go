@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/goplus/llvm"
+	"github.com/xgo-dev/llvm"
 )
 
 var errDirectModuleUnsupported = errors.New("direct module lowering unsupported")

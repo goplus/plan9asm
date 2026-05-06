@@ -5,7 +5,7 @@
 Current `plan9asm.Translate` emits textual `.ll` by string concatenation.
 Target architecture:
 
-1. Build an in-memory `llvm.Module` (via `github.com/goplus/llvm`).
+1. Build an in-memory `llvm.Module` (via `github.com/xgo-dev/llvm`).
 2. Caller can choose:
    - get module handle directly
    - serialize module to string/bitcode as needed

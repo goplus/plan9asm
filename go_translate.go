@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goplus/llvm"
+	"github.com/xgo-dev/llvm"
 )
 
 // GoPackage provides the Go declarations and syntax needed to bind a Plan 9

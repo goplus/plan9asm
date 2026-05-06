@@ -1,2 +1,2 @@
-github.com/goplus/llvm v0.8.7 h1:FUpjuZ4Y+F9wNw2ztN5dCGnZnAQgH1YHaYEiX2QpfkQ=
-github.com/goplus/llvm v0.8.7/go.mod h1:PeVK8GgzxwAYCiMiUAJb5wJR6xbhj989tu9oulKLLT4=
+github.com/xgo-dev/llvm v0.9.0 h1:WHagpgXmo0dx7sLvl93o3BwzhHeYEHQ0xiIj870qS54=
+github.com/xgo-dev/llvm v0.9.0/go.mod h1:42vav2/cI5BAIcL543DZSMO9do8/aCK2z7JERH+AE+M=
