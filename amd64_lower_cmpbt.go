@@ -78,6 +78,70 @@ func (c *amd64Ctx) lowerCmpBt(op Op, ins Instr) (ok bool, terminated bool, err e
 		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
 		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
 		return true, false, nil
+
+	case "BTSQ":
+		// BTSQ src, dstReg|dstMem: CF = old bit, dst bit set.
+		if len(ins.Args) != 2 {
+			return true, false, fmt.Errorf("amd64 BTSQ expects src, dst: %q", ins.Raw)
+		}
+		var amt string
+		switch ins.Args[0].Kind {
+		case OpImm:
+			amt = fmt.Sprintf("%d", ins.Args[0].Imm&63)
+		case OpReg:
+			av, err := c.loadReg(ins.Args[0].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			m := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = and i64 %s, 63\n", m, av)
+			amt = "%" + m
+		default:
+			return true, false, fmt.Errorf("amd64 BTSQ expects imm/reg bit index: %q", ins.Raw)
+		}
+
+		var dst string
+		var storeDst func(string) error
+		switch ins.Args[1].Kind {
+		case OpReg:
+			dv, err := c.loadReg(ins.Args[1].Reg)
+			if err != nil {
+				return true, false, err
+			}
+			dst = dv
+			storeDst = func(v string) error { return c.storeReg(ins.Args[1].Reg, v) }
+		case OpMem:
+			addr, err := c.addrFromMem(ins.Args[1].Mem)
+			if err != nil {
+				return true, false, err
+			}
+			p := c.ptrFromAddrI64(addr)
+			ld := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = load i64, ptr %s, align 1\n", ld, p)
+			dst = "%" + ld
+			storeDst = func(v string) error {
+				fmt.Fprintf(c.b, "  store i64 %s, ptr %s, align 1\n", v, p)
+				return nil
+			}
+		default:
+			return true, false, fmt.Errorf("amd64 BTSQ expects reg/mem dst: %q", ins.Raw)
+		}
+
+		sh := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %s\n", sh, dst, amt)
+		and := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %%%s, 1\n", and, sh)
+		cf := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = icmp ne i64 %%%s, 0\n", cf, and)
+		fmt.Fprintf(c.b, "  store i1 %%%s, ptr %s\n", cf, c.flagsCFSlot)
+		one := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = shl i64 1, %s\n", one, amt)
+		out := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %s, %%%s\n", out, dst, one)
+		if err := storeDst("%" + out); err != nil {
+			return true, false, err
+		}
+		return true, false, nil
 	}
 	return false, false, nil
 }

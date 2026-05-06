@@ -469,31 +469,77 @@ func amd64ValueAsI64(c *amd64Ctx, ty LLVMType, v string) (out string, ok bool, e
 	}
 }
 
-func (c *amd64Ctx) loadReg(r Reg) (string, error) {
-	// Model low-byte aliases used by stdlib asm.
-	// We treat writes/reads of AL/BL/CL/DL as operating on the full AX/BX/CX/DX,
-	// returning the masked low byte as a zero-extended i64.
-	alias := func(rr Reg) (base Reg, mask int64, ok bool) {
-		switch rr {
-		case AL:
-			return AX, 0xff, true
-		case BL:
-			return BX, 0xff, true
-		case CL:
-			return CX, 0xff, true
-		case DL:
-			return DX, 0xff, true
-		default:
-			return "", 0, false
-		}
+func amd64ByteAlias(rr Reg) (base Reg, shift uint, ok bool) {
+	switch rr {
+	case AL:
+		return AX, 0, true
+	case AH:
+		return AX, 8, true
+	case BL:
+		return BX, 0, true
+	case BH:
+		return BX, 8, true
+	case CL:
+		return CX, 0, true
+	case CH:
+		return CX, 8, true
+	case DL:
+		return DX, 0, true
+	case DH:
+		return DX, 8, true
+	default:
+		return "", 0, false
 	}
-	if base, mask, ok := alias(r); ok {
+}
+
+func amd64FullRegBase(r Reg) (Reg, bool) {
+	if base, _, ok := amd64ByteAlias(r); ok {
+		return base, true
+	}
+	if r == "" || r == PC || r == ZR {
+		return "", false
+	}
+	if _, ok := amd64ParseXReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseYReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseZReg(r); ok {
+		return "", false
+	}
+	if _, ok := amd64ParseKReg(r); ok {
+		return "", false
+	}
+	return r, true
+}
+
+func amd64ByteRegBase(r Reg) (base Reg, shift uint, ok bool) {
+	if base, shift, ok := amd64ByteAlias(r); ok {
+		return base, shift, true
+	}
+	base, ok = amd64FullRegBase(r)
+	if !ok {
+		return "", 0, false
+	}
+	return base, 0, true
+}
+
+func (c *amd64Ctx) loadReg(r Reg) (string, error) {
+	// Model byte aliases used by stdlib asm. Reads return the selected byte as a
+	// zero-extended i64.
+	if base, shift, ok := amd64ByteAlias(r); ok {
 		v, err := c.loadReg(base)
 		if err != nil {
 			return "", err
 		}
+		if shift != 0 {
+			t := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = lshr i64 %s, %d\n", t, v, shift)
+			v = "%" + t
+		}
 		t := c.newTmp()
-		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", t, v, mask)
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", t, v)
 		return "%" + t, nil
 	}
 	slot, ok := c.regSlot[r]
@@ -506,16 +552,27 @@ func (c *amd64Ctx) loadReg(r Reg) (string, error) {
 }
 
 func (c *amd64Ctx) storeReg(r Reg, v string) error {
-	// See loadReg for alias handling.
-	switch r {
-	case AL:
-		r = AX
-	case BL:
-		r = BX
-	case CL:
-		r = CX
-	case DL:
-		r = DX
+	// See loadReg for byte-alias handling.
+	if base, shift, ok := amd64ByteAlias(r); ok {
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		mask := int64(0xff) << shift
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^mask)
+		byteVal := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, 255\n", byteVal, v)
+		ins := "%" + byteVal
+		if shift != 0 {
+			shifted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n", shifted, byteVal, shift)
+			ins = "%" + shifted
+		}
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", merged, cleared, ins)
+		r = base
+		v = "%" + merged
 	}
 	slot, ok := c.regSlot[r]
 	if !ok {
@@ -523,6 +580,66 @@ func (c *amd64Ctx) storeReg(r Reg, v string) error {
 	}
 	fmt.Fprintf(c.b, "  store i64 %s, ptr %s\n", v, slot)
 	return nil
+}
+
+func (c *amd64Ctx) storeRegSized(r Reg, ty LLVMType, v string) error {
+	switch ty {
+	case I8:
+		base, shift, ok := amd64ByteRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i8 store: %s", r)
+		}
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		mask := int64(0xff) << shift
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^mask)
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i8 %s to i64\n", ext, v)
+		ins := "%" + ext
+		if shift != 0 {
+			shifted := c.newTmp()
+			fmt.Fprintf(c.b, "  %%%s = shl i64 %%%s, %d\n", shifted, ext, shift)
+			ins = "%" + shifted
+		}
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %s\n", merged, cleared, ins)
+		return c.storeReg(base, "%"+merged)
+	case I16:
+		base, ok := amd64FullRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i16 store: %s", r)
+		}
+		cur, err := c.loadReg(base)
+		if err != nil {
+			return err
+		}
+		cleared := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = and i64 %s, %d\n", cleared, cur, ^int64(0xffff))
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i16 %s to i64\n", ext, v)
+		merged := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = or i64 %%%s, %%%s\n", merged, cleared, ext)
+		return c.storeReg(base, "%"+merged)
+	case I32:
+		base, ok := amd64FullRegBase(r)
+		if !ok {
+			return fmt.Errorf("not a GP reg for i32 store: %s", r)
+		}
+		ext := c.newTmp()
+		fmt.Fprintf(c.b, "  %%%s = zext i32 %s to i64\n", ext, v)
+		return c.storeReg(base, "%"+ext)
+	case I64:
+		base, ok := amd64FullRegBase(r)
+		if ok {
+			return c.storeReg(base, v)
+		}
+		return c.storeReg(r, v)
+	default:
+		return fmt.Errorf("unsupported sized reg store %s to %s", ty, r)
+	}
 }
 
 func (c *amd64Ctx) loadX(r Reg) (string, error) {

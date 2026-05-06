@@ -112,6 +112,7 @@ func TestTypeParserEdgeCoverage(t *testing.T) {
 		ok   bool
 	}{
 		{"rax", AX, true},
+		{"ah", AH, true},
 		{"w3", "R3", true},
 		{"g", "R28", true},
 		{"lr", "R30", true},
