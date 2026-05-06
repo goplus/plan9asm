@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goplus/llvm"
+	"github.com/xgo-dev/llvm"
 )
 
 func TestPreprocessCoverageEdges(t *testing.T) {

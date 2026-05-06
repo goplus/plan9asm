@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goplus/llvm"
-	"github.com/goplus/plan9asm"
+	"github.com/xgo-dev/llvm"
+	"github.com/xgo-dev/plan9asm"
 	"golang.org/x/tools/go/packages"
 )
 

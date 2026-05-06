@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goplus/plan9asm"
+	"github.com/xgo-dev/plan9asm"
 )
 
 func TestToPlan9Arch(t *testing.T) {

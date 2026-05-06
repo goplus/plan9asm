@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/goplus/llvm"
+	"github.com/xgo-dev/llvm"
 )
 
 // TranslateModule converts a parsed Plan 9 asm File into an llvm.Module.

@@ -1,12 +1,12 @@
 # plan9asm
 
-`github.com/goplus/plan9asm`
+`github.com/xgo-dev/plan9asm`
 
 Plan 9 assembly parser and LLVM IR translator, extracted as an independent module.
 
 ## Repository layout
 
-- `github.com/goplus/plan9asm`: parser + lowering library.
+- `github.com/xgo-dev/plan9asm`: parser + lowering library.
 - `cmd/plan9asm`: package/file oriented helper (`list`, `transpile`), moved from `llgo-stdlib-opt/chore/plan9asm`.
 - `cmd/plan9asmll`: stdlib-oriented converter/test tool (`.s -> .ll`, optional `llc` compile).
 
@@ -22,7 +22,7 @@ Plan 9 assembly parser and LLVM IR translator, extracted as an independent modul
 
 ## LLVM backend
 
-- `TranslateModule` builds an in-memory `llvm.Module` (`github.com/goplus/llvm`).
+- `TranslateModule` builds an in-memory `llvm.Module` (`github.com/xgo-dev/llvm`).
 - `Translate` keeps compatibility and returns textual IR from that module.
 - Root module dependency stays small (`goplus/llvm`).
 - `golang.org/x/tools/go/packages` is used only in `cmd/plan9asmll` submodule.
